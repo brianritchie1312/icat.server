@@ -7,42 +7,28 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 
-import org.apache.log4j.BasicConfigurator;
-import org.apache.log4j.ConsoleAppender;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
-import org.apache.log4j.PatternLayout;
-import org.apache.log4j.PropertyConfigurator;
 import org.icatproject.core.entity.EntityBaseBean;
 import org.icatproject.core.manager.EntityInfoHandler;
-import org.icatproject.core.manager.LoggingConfigurator;
 import org.icatproject.core.manager.EntityInfoHandler.Relationship;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class DocGenerator {
 
 	private static EntityInfoHandler eiHandler = EntityInfoHandler.getInstance();
 
-	private static Logger logger = Logger.getRootLogger();
+	private static Logger logger = LoggerFactory.getLogger(DocGenerator.class);
 
 	public static void main(String[] args) throws Exception {
 
 		logger.debug("DocGenerator starting");
 
-		// ConsoleAppender console = new ConsoleAppender(); // create appender
-		// // configure the appender
-		// // String PATTERN = "%d [%p|%c|%C{1}] %m%n";
-		// // console.setLayout(new PatternLayout(PATTERN));
-		// console.setThreshold(Level.FATAL);
-		// console.activateOptions();
-		// // add appender to any Logger (here is root)
-		// Logger.getRootLogger().addAppender(console);
-
 		File dir = new File(args[0]);
 		PrintWriter out = new PrintWriter(new File(dir, "src/site/resources/schema.html"));
-		out.print("<!DOCTYPE HTML><html><head><style type=\"text/css\">h1,h2,h3 {color:sienna;} table { border-collapse:collapse; } td, th { border:1px solid sienna; padding:4px; font-weight:normal; text-align:left} th { color:sienna; }</style><title>ICAT Schema</title><link rel=\"icon\" href=\"http://www.icatproject.org/favicon.ico\"/></head><body><h1>ICAT Schema</h1>");
+		out.print(
+				"<!DOCTYPE HTML><html><head><style type=\"text/css\">h1,h2,h3 {color:sienna;} table { border-collapse:collapse; } td, th { border:1px solid sienna; padding:4px; font-weight:normal; text-align:left} th { color:sienna; }</style><title>ICAT Schema</title><link rel=\"icon\" href=\"http://www.icatproject.org/favicon.ico\"/></head><body><h1>ICAT Schema</h1>");
 		List<String> cnames = EntityInfoHandler.getEntityNamesList();
 
 		out.print("<p style=\"max-width:50em;\">");
@@ -98,7 +84,8 @@ public class DocGenerator {
 				out.println("</p>");
 			}
 
-			out.println("<h3>Relationships</h3><table><tr><th>Card</th><th>Class</th><th>Field</th><th>Cascaded</th><th>Description</th></tr>");
+			out.println(
+					"<h3>Relationships</h3><table><tr><th>Card</th><th>Class</th><th>Field</th><th>Cascaded</th><th>Description</th></tr>");
 			for (Relationship r : eiHandler.getRelatedEntities(eklass)) {
 				Field f = r.getField();
 				boolean notnullable = notnullables.contains(f);
@@ -107,8 +94,8 @@ public class DocGenerator {
 				String card = (notnullable ? "1" : "0") + "," + (many ? "*" : "1");
 				String cascaded = (r.isCollection() ? "Yes" : "");
 				out.print("<tr><td> " + card + "</td>");
-				out.print("<td><a href = \"#" + beanName + "\">" + beanName + "</a></td><td>"
-						+ f.getName() + "</td><td>" + cascaded + "</td>");
+				out.print("<td><a href = \"#" + beanName + "\">" + beanName + "</a></td><td>" + f.getName()
+						+ "</td><td>" + cascaded + "</td>");
 				String comments = fieldComments.get(f);
 				out.println("<td>" + ((comments == null) ? "" : comments) + "</td></tr>");
 				fields.remove(f);

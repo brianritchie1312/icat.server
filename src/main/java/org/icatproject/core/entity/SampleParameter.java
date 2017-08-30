@@ -11,6 +11,7 @@ import javax.persistence.UniqueConstraint;
 import javax.xml.bind.annotation.XmlRootElement;
 
 import org.icatproject.core.IcatException;
+import org.icatproject.core.manager.EntityBeanManager.PersistMode;
 import org.icatproject.core.manager.GateKeeper;
 
 @Comment("A parameter associated with a sample")
@@ -34,13 +35,11 @@ public class SampleParameter extends Parameter implements Serializable {
 	}
 
 	@Override
-	public void preparePersist(String modId, EntityManager manager, GateKeeper gateKeeper, boolean rootUser)
+	public void preparePersist(String modId, EntityManager manager, GateKeeper gateKeeper, PersistMode persistMode)
 			throws IcatException {
-		super.preparePersist(modId, manager, gateKeeper, rootUser);
-		this.id = null;
+		super.preparePersist(modId, manager, gateKeeper, persistMode);
 		if (type == null) {
-			throw new IcatException(IcatException.IcatExceptionType.VALIDATION,
-					"Type of parameter is not set");
+			throw new IcatException(IcatException.IcatExceptionType.VALIDATION, "Type of parameter is not set");
 		}
 		if (!type.isApplicableToSample()) {
 			throw new IcatException(IcatException.IcatExceptionType.VALIDATION,

@@ -2,6 +2,7 @@ package org.icatproject.core.entity;
 
 import java.io.Serializable;
 
+import javax.json.stream.JsonGenerator;
 import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.JoinColumn;
@@ -9,10 +10,7 @@ import javax.persistence.ManyToOne;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 
-import org.apache.lucene.document.Document;
-import org.apache.lucene.document.StringField;
-import org.apache.lucene.document.TextField;
-import org.apache.lucene.document.Field.Store;
+import org.icatproject.core.manager.LuceneApi;
 
 @Comment("Many to many relationship between investigation and user. It is expected that this will show the association of "
 		+ "individual users with an investigation which might be derived from the proposal. It may also be used as the "
@@ -40,14 +38,12 @@ public class InvestigationUser extends EntityBaseBean implements Serializable {
 	}
 
 	@Override
-	public Document getDoc() {
-		Document doc = new Document();
+	public void getDoc(JsonGenerator gen) {
 		if (user.getFullName() != null) {
-			doc.add(new TextField("text", user.getFullName(), Store.NO));
+			LuceneApi.encodeTextfield(gen, "text", user.getFullName());
 		}
-		doc.add(new StringField("name", user.getName(), Store.NO));
-		doc.add(new StringField("investigation", "Investigation:" + investigation.id, Store.YES));
-		return doc;
+		LuceneApi.encodeStringField(gen, "name", user.getName());
+		LuceneApi.encodeSortedDocValuesField(gen, "investigation", investigation.id);
 	}
 
 	public String getRole() {

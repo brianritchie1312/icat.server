@@ -5,10 +5,12 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
+import javax.json.stream.JsonGenerator;
 import javax.persistence.CascadeType;
 import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.FetchType;
+import javax.persistence.Index;
 import javax.persistence.JoinColumn;
 import javax.persistence.ManyToOne;
 import javax.persistence.OneToMany;
@@ -18,18 +20,14 @@ import javax.persistence.TemporalType;
 import javax.persistence.UniqueConstraint;
 import javax.xml.bind.annotation.XmlRootElement;
 
-import org.apache.lucene.document.DateTools;
-import org.apache.lucene.document.Document;
-import org.apache.lucene.document.StringField;
-import org.apache.lucene.document.TextField;
-import org.apache.lucene.document.DateTools.Resolution;
-import org.apache.lucene.document.Field.Store;
+import org.icatproject.core.manager.LuceneApi;
 
 @Comment("A data file")
 @SuppressWarnings("serial")
 @Entity
 @XmlRootElement
-@Table(uniqueConstraints = { @UniqueConstraint(columnNames = { "DATASET_ID", "NAME" }) })
+@Table(uniqueConstraints = { @UniqueConstraint(columnNames = { "DATASET_ID", "NAME" }) }, indexes = {
+		@Index(columnList = "location") })
 public class Datafile extends EntityBaseBean implements Serializable {
 
 	@Comment("Checksum of file represented as a string")
@@ -196,8 +194,7 @@ public class Datafile extends EntityBaseBean implements Serializable {
 	}
 
 	@Override
-	public Document getDoc() {
-		Document doc = new Document();
+	public void getDoc(JsonGenerator gen) {
 		StringBuilder sb = new StringBuilder(name);
 		if (description != null) {
 			sb.append(" " + description);
@@ -207,21 +204,16 @@ public class Datafile extends EntityBaseBean implements Serializable {
 		}
 		if (datafileFormat != null) {
 			sb.append(" " + datafileFormat.getName());
-
 		}
-		doc.add(new TextField("text", sb.toString(), Store.NO));
+		LuceneApi.encodeTextfield(gen, "text", sb.toString());
 		if (datafileModTime != null) {
-			doc.add(new StringField("date", DateTools.dateToString(datafileModTime,
-					Resolution.MINUTE), Store.NO));
-
+			LuceneApi.encodeStringField(gen, "date", datafileModTime);
 		} else if (datafileCreateTime != null) {
-			doc.add(new StringField("date", DateTools.dateToString(datafileCreateTime,
-					Resolution.MINUTE), Store.NO));
+			LuceneApi.encodeStringField(gen, "date", datafileCreateTime);
 		} else {
-			doc.add(new StringField("date", DateTools.dateToString(modTime, Resolution.MINUTE),
-					Store.NO));
+			LuceneApi.encodeStringField(gen, "date", modTime);
 		}
-		doc.add(new StringField("dataset", "Dataset:" + dataset.id, Store.YES));
-		return doc;
+		LuceneApi.encodeStoredId(gen, id);
+		LuceneApi.encodeStringField(gen, "dataset", dataset.id);
 	}
 }

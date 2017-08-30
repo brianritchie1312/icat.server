@@ -1,16 +1,20 @@
 package org.icatproject.integration;
 
-import java.net.MalformedURLException;
+import java.io.ByteArrayInputStream;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import javax.json.Json;
+import javax.json.JsonString;
 import javax.xml.datatype.XMLGregorianCalendar;
 import javax.xml.namespace.QName;
+import javax.xml.ws.WebServiceException;
 
 import org.icatproject.AccessType;
 import org.icatproject.Application;
+import org.icatproject.AuthenticatorInfo;
 import org.icatproject.DataCollection;
 import org.icatproject.DataCollectionDatafile;
 import org.icatproject.DataCollectionDataset;
@@ -30,6 +34,7 @@ import org.icatproject.IcatException_Exception;
 import org.icatproject.Instrument;
 import org.icatproject.InstrumentScientist;
 import org.icatproject.Investigation;
+import org.icatproject.InvestigationGroup;
 import org.icatproject.InvestigationInstrument;
 import org.icatproject.InvestigationType;
 import org.icatproject.InvestigationUser;
@@ -39,9 +44,12 @@ import org.icatproject.Login.Credentials.Entry;
 import org.icatproject.ParameterType;
 import org.icatproject.ParameterValueType;
 import org.icatproject.Rule;
+import org.icatproject.Study;
+import org.icatproject.StudyInvestigation;
 import org.icatproject.User;
 import org.icatproject.UserGroup;
-import org.icatproject.InvestigationGroup;
+import org.icatproject.utils.ContainerGetter;
+import org.icatproject.utils.ContainerGetter.ContainerType;
 
 public class WSession {
 	public enum ParameterApplicability {
@@ -54,15 +62,39 @@ public class WSession {
 
 	private String rootsessionId;
 
-	public WSession() throws MalformedURLException, IcatException_Exception {
+	private ContainerType containerType;
+
+	private static String[] suffices = new String[] { "ICATService/ICAT?wsdl", "icat/ICAT?wsdl" };
+
+	public WSession() throws Exception {
 		String url = System.getProperty("serverUrl");
 		System.out.println("Using ICAT service at " + url);
-		final URL icatUrl = new URL(url + "/ICATService/ICAT?wsdl");
-		final ICATService icatService = new ICATService(icatUrl, new QName("http://icatproject.org", "ICATService"));
+		ICATService icatService = null;
+		for (String suffix : suffices) {
+			URL icatUrl = new URL(url + "/" + suffix);
+
+			try {
+				icatService = new ICATService(icatUrl, new QName("http://icatproject.org", "ICATService"));
+			} catch (WebServiceException e) {
+				Throwable cause = e.getCause();
+				if (cause != null && cause.getMessage().contains("security")) {
+					throw e;
+				}
+			}
+		}
+		if (icatService == null) {
+			throw new Exception("Unable to connect to: " + url);
+		}
 		this.icat = icatService.getICATPort();
 		this.rootsessionId = login("db", "username", "root", "password", "password");
 		this.sessionId = login("db", "username", "notroot", "password", "password");
-		System.out.println("Logged in");
+
+		String json = (new org.icatproject.icat.client.ICAT(System.getProperty("serverUrl"))).getProperties();
+		containerType = ContainerGetter.ContainerType
+				.valueOf(((JsonString) Json.createReader(new ByteArrayInputStream(json.getBytes())).readObject()
+						.get("containerType")).getString());
+
+		System.out.println("Logged in to " + containerType + " container");
 	}
 
 	private WSession(ICAT icat, String plugin, String[] credbits) throws IcatException_Exception {
@@ -98,11 +130,13 @@ public class WSession {
 		rule.setWhat(what);
 		rule.setCrudFlags(crudFlags);
 		this.icat.create(this.rootsessionId, rule);
+		snooze();
 	}
 
 	public void delRule(String groupName, String what, String crudFlags) throws Exception {
-		what = what.replace("'", "''");
 		List<Object> rules = null;
+
+		what = what.replace("'", "''");
 		if (groupName == null) {
 			rules = search("select r FROM Rule r WHERE r.what = '" + what + "' AND r.crudFlags = '" + crudFlags
 					+ "' AND r.grouping IS NULL");
@@ -110,11 +144,18 @@ public class WSession {
 			rules = search("Rule [what = '" + what + "' and crudFlags = '" + crudFlags + "'] <-> Grouping [name= '"
 					+ groupName + "']");
 		}
+
 		if (rules.size() == 1) {
 			delete((EntityBaseBean) rules.get(0));
 		} else {
 			throw new Exception(rules.size() + " rules match " + groupName + ", " + what + ", " + crudFlags);
 		}
+		snooze();
+	}
+
+	private void snooze() throws InterruptedException {
+		// System.out.println("Taking a snooze");
+		// Thread.sleep(5000);
 	}
 
 	public void addUserGroupMember(String groupName, String userName) throws Exception {
@@ -150,7 +191,7 @@ public class WSession {
 	}
 
 	public void clear() throws Exception {
-		deleteAll(Arrays.asList("Facility", "Log", "DataCollection"));
+		deleteAll(Arrays.asList("Facility", "DataCollection", "Study"));
 	}
 
 	private void deleteAll(List<String> names) throws IcatException_Exception {
@@ -178,9 +219,11 @@ public class WSession {
 
 	public void clearAuthz() throws Exception {
 		deleteAll(Arrays.asList("Rule", "UserGroup", "User", "Grouping", "PublicStep"));
+		snooze();
 	}
 
-	public Application createApplication(Facility facility, String name, String version) throws IcatException_Exception {
+	public Application createApplication(Facility facility, String name, String version)
+			throws IcatException_Exception {
 		final Application application = new Application();
 		application.setFacility(facility);
 		application.setName(name);
@@ -240,9 +283,9 @@ public class WSession {
 		return dst;
 	}
 
-	public Facility createFacility(String shortName, int daysUntilRelease) throws Exception {
+	public Facility createFacility(String name, int daysUntilRelease) throws Exception {
 		final Facility f = new Facility();
-		f.setName(shortName);
+		f.setName(name);
 		f.setDaysUntilRelease(daysUntilRelease);
 		f.setId(icat.create(this.sessionId, f));
 		return f;
@@ -302,37 +345,50 @@ public class WSession {
 				throw e;
 			}
 		}
-		this.addRule("notroot", "SELECT x FROM Rule x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM User x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM Grouping x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM UserGroup x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM DatafileFormat x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM DatasetType x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM Facility x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM Investigation x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM InvestigationUser x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM InvestigationType x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM ParameterType x", "CRUD");
-		this.addRule("notroot", "Dataset", "CRUD");
-		this.addRule("notroot", "SELECT x FROM ParameterType x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM DatasetParameter x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM Datafile x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM DatafileFormat x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM DatasetType x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM Application x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM Job x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM DataCollection x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM DataCollectionParameter x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM DataCollectionDataset x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM DataCollectionDatafile x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM InvestigationParameter x", "CRUD");
-		this.addRule("notroot", "SELECT x FROM Log x", "CRUD");
-		this.addRule("notroot", "Instrument", "CRUD");
-		this.addRule("notroot", "InvestigationInstrument", "CRUD");
-		this.addRule("notroot", "InstrumentScientist", "CRUD");
-		this.addRule("notroot", "SampleType", "CRUD");
-		this.addRule("notroot", "Sample", "CRUD");
-		this.addRule("notroot", "PublicStep", "CRUD");
+		this.addFastRule("SELECT x FROM Rule x", "CRUD");
+		this.addFastRule("SELECT x FROM User x", "CRUD");
+		this.addFastRule("SELECT x FROM Grouping x", "CRUD");
+		this.addFastRule("SELECT x FROM UserGroup x", "CRUD");
+		this.addFastRule("SELECT x FROM DatafileFormat x", "CRUD");
+		this.addFastRule("SELECT x FROM DatasetType x", "CRUD");
+		this.addFastRule("SELECT x FROM Facility x", "CRUD");
+		this.addFastRule("SELECT x FROM Investigation x", "CRUD");
+		this.addFastRule("SELECT x FROM InvestigationUser x", "CRUD");
+		this.addFastRule("SELECT x FROM InvestigationType x", "CRUD");
+		this.addFastRule("SELECT x FROM ParameterType x", "CRUD");
+		this.addFastRule("Dataset", "CRUD");
+		this.addFastRule("SELECT x FROM ParameterType x", "CRUD");
+		this.addFastRule("SELECT x FROM DatasetParameter x", "CRUD");
+		this.addFastRule("SELECT x FROM Datafile x", "CRUD");
+		this.addFastRule("SELECT x FROM DatafileParameter x", "CRUD");
+		this.addFastRule("SELECT x FROM DatafileFormat x", "CRUD");
+		this.addFastRule("SELECT x FROM DatasetType x", "CRUD");
+		this.addFastRule("SELECT x FROM Application x", "CRUD");
+		this.addFastRule("SELECT x FROM Job x", "CRUD");
+		this.addFastRule("SELECT x FROM DataCollection x", "CRUD");
+		this.addFastRule("SELECT x FROM DataCollectionParameter x", "CRUD");
+		this.addFastRule("SELECT x FROM DataCollectionDataset x", "CRUD");
+		this.addFastRule("SELECT x FROM DataCollectionDatafile x", "CRUD");
+		this.addFastRule("SELECT x FROM InvestigationParameter x", "CRUD");
+		this.addFastRule("Instrument", "CRUD");
+		this.addFastRule("InvestigationInstrument", "CRUD");
+		this.addFastRule("InstrumentScientist", "CRUD");
+		this.addFastRule("SampleType", "CRUD");
+		this.addFastRule("Sample", "CRUD");
+		this.addFastRule("PublicStep", "CRUD");
+		this.addFastRule("Study", "CRUD");
+		this.addFastRule("StudyInvestigation", "CRUD");
+		snooze();
+	}
+
+	private void addFastRule(String what, String crudFlags) throws IcatException_Exception {
+		String groupName = "notroot";
+		Rule rule = new Rule();
+		Grouping g = (Grouping) icat.search(rootsessionId, "Grouping [name= '" + groupName + "']").get(0);
+		rule.setGrouping(g);
+		rule.setWhat(what);
+		rule.setCrudFlags(crudFlags);
+		this.icat.create(this.rootsessionId, rule);
 	}
 
 	public void update(EntityBaseBean df) throws IcatException_Exception {
@@ -387,15 +443,11 @@ public class WSession {
 		icat.logout(sessionId);
 	}
 
-	/*
-	 * TODO in 4.6.0 public List<Object> searchText(String query, int maxCount,
-	 * String entity) throws IcatException_Exception { return
-	 * this.icat.searchText(sessionId, query, maxCount, entity); }
-	 * 
-	 * // This assumes that the lucene.commitSeconds is set to 1 for testing //
-	 * purposes public void synchLucene() throws InterruptedException {
-	 * Thread.sleep(2000); }
-	 */
+	// This assumes that the lucene.commitSeconds is set to 1 for testing
+	// purposes
+	public void synchLucene() throws InterruptedException {
+		Thread.sleep(2000);
+	}
 
 	public DataCollection createDataCollection(EntityBaseBean... beans) throws IcatException_Exception {
 		DataCollection dataCollection = new DataCollection();
@@ -419,26 +471,6 @@ public class WSession {
 	public List<String> getProperties() throws IcatException_Exception {
 		return icat.getProperties(rootsessionId);
 	}
-
-	// TODO bring back in 4.6
-	// public void luceneClear() throws IcatException_Exception {
-	// icat.luceneClear(rootsessionId);
-	// }
-	//
-	// public void luceneCommit() throws IcatException_Exception {
-	// icat.luceneCommit(rootsessionId);
-	// }
-	//
-	// public void lucenePopulate(String entityName) throws
-	// IcatException_Exception {
-	// icat.lucenePopulate(rootsessionId, entityName);
-	// }
-	//
-	// public List<String> luceneSearch(String query, int maxCount, String
-	// entityName)
-	// throws IcatException_Exception {
-	// return icat.luceneSearch(rootsessionId, query, maxCount, entityName);
-	// }
 
 	public Instrument createInstrument(Facility facility, String name) throws IcatException_Exception {
 		Instrument ins = new Instrument();
@@ -476,12 +508,6 @@ public class WSession {
 		return iu;
 	}
 
-	// TODO restore in ICAT 4.6.0
-	// public List<String> luceneGetPopulating() throws IcatException_Exception
-	// {
-	// return icat.luceneGetPopulating(rootsessionId);
-	// }
-
 	public boolean isAccessAllowed(EntityBaseBean bean, AccessType aType) throws IcatException_Exception {
 		return icat.isAccessAllowed(sessionId, bean, aType);
 	}
@@ -500,6 +526,29 @@ public class WSession {
 		ig.setGrouping(grouping);
 		ig.setRole(role);
 		icat.create(sessionId, ig);
+	}
+
+	public ContainerType getContainerType() {
+		return containerType;
+	}
+
+	public Study createStudy(String name) throws IcatException_Exception {
+		Study s = new Study();
+		s.setName(name);
+		s.setId(icat.create(sessionId, s));
+		return s;
+	}
+
+	public void createStudyInvestigation(Study study, Investigation inv) throws IcatException_Exception {
+		StudyInvestigation si = new StudyInvestigation();
+		si.setStudy(study);
+		si.setInvestigation(inv);
+		icat.create(sessionId, si);
+
+	}
+
+	public List<AuthenticatorInfo> getAuthenticatorInfo() throws IcatException_Exception {
+		return icat.getAuthenticatorInfo();
 	}
 
 }

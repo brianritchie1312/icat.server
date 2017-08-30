@@ -16,18 +16,13 @@ import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.Random;
 
-import javax.jms.MessageConsumer;
-import javax.jms.ObjectMessage;
-import javax.jms.Topic;
-import javax.jms.TopicConnection;
-import javax.jms.TopicConnectionFactory;
-import javax.naming.Context;
-import javax.naming.InitialContext;
 import javax.xml.datatype.DatatypeFactory;
 import javax.xml.datatype.XMLGregorianCalendar;
 
 import org.icatproject.AccessType;
 import org.icatproject.Application;
+import org.icatproject.AuthenticatorCredentialKey;
+import org.icatproject.AuthenticatorInfo;
 import org.icatproject.Constraint;
 import org.icatproject.DataCollection;
 import org.icatproject.Datafile;
@@ -58,9 +53,11 @@ import org.icatproject.Rule;
 import org.icatproject.Sample;
 import org.icatproject.SampleParameter;
 import org.icatproject.SampleType;
+import org.icatproject.Study;
 import org.icatproject.User;
 import org.icatproject.UserGroup;
 import org.icatproject.core.manager.EntityInfoHandler;
+import org.icatproject.utils.ContainerGetter.ContainerType;
 import org.junit.BeforeClass;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -71,6 +68,7 @@ import org.junit.Test;
  */
 public class TestWS {
 
+	private static final String version = "4.9.";
 	private static Random random;
 	private static WSession session;
 
@@ -113,9 +111,14 @@ public class TestWS {
 
 		Investigation invC = session.createInvestigation(facility, "C", "Not null", investigationType);
 
-		Instrument wish = session.createInstrument(facility, "wish");
+		Instrument wish = session.createInstrument(facility, "WISH");
+		Instrument bone = session.createInstrument(facility, "BONE");
+
+		Study study = session.createStudy("long");
+		session.createStudyInvestigation(study, invA);
 
 		session.createInvestigationInstrument(invA, wish);
+		session.createInvestigationInstrument(invA, bone);
 		session.createInvestigationInstrument(invB, wish);
 
 		User notroot = (User) session.search("User[name='db/notroot']").get(0);
@@ -248,7 +251,7 @@ public class TestWS {
 	@Test
 	public void entities() throws Exception {
 		List<String> entities = session.getEntityNames();
-		assertEquals(39, entities.size());
+		assertEquals(38, entities.size());
 		assertTrue(entities.contains("Application"));
 	}
 
@@ -282,13 +285,6 @@ public class TestWS {
 		assertEquals(2L, session.search(q3).get(0));
 
 		try {
-			session.addRule("notroot", "Dataset [type.name = ' ']", "R");
-			fail("Exception should be thrown");
-		} catch (IcatException_Exception e) {
-			assertEquals(IcatExceptionType.BAD_PARAMETER, e.getFaultInfo().getType());
-		}
-
-		try {
 			session.delRule("notroot", "Dataset", "CRUD");
 			// The space between the single quotes is necessary - I suspect a
 			// bug in eclipselink
@@ -300,13 +296,13 @@ public class TestWS {
 			assertEquals(0L, session.search(q3).get(0));
 
 			session.delRule("notroot", "Dataset <-> DatasetType [name = ' ']", "R");
-			session.addRule("notroot", "Dataset  <-> DatasetType[name = 'PB']", "R");
+			session.addRule("notroot", "Dataset <-> DatasetType[name = 'PB']", "R");
 
 			assertEquals(1L, session.search(q1).get(0));
 			assertEquals(1L, session.search(q2).get(0));
 			assertEquals(1L, session.search(q3).get(0));
 
-			session.delRule("notroot", "Dataset  <-> DatasetType[name = 'PB']", "R");
+			session.delRule("notroot", "Dataset <-> DatasetType[name = 'PB']", "R");
 		} finally {
 			session.addRule("notroot", "Dataset", "CRUD");
 		}
@@ -320,10 +316,7 @@ public class TestWS {
 
 		InvestigationType investigationType = session.createInvestigationType(facility, "TestExperiment");
 
-		Rule rule = new Rule();
-		rule.setCrudFlags("R");
-		rule.setWhat("Investigation <-> InvestigationUser <-> User [name = :user]");
-		session.create(rule);
+		session.addRule(null, "Investigation <-> InvestigationUser <-> User [name = :user]", "R");
 
 		User piOne = new User();
 		piOne.setName("db/piOne");
@@ -376,11 +369,8 @@ public class TestWS {
 		userGroup.setGrouping(oneControllers);
 		session.create(userGroup);
 
-		rule = new Rule();
-		rule.setCrudFlags("CRUD");
-		rule.setGrouping(oneControllers);
-		rule.setWhat("InvestigationUser <-> Investigation [name = 'InvestigationOne']");
-		session.create(rule);
+		session.addRule(oneControllers.getName(), "InvestigationUser <-> Investigation [name = 'InvestigationOne']",
+				"CRUD");
 
 		try {
 			InvestigationUser iuaone = new InvestigationUser();
@@ -405,12 +395,7 @@ public class TestWS {
 		// Create a simple rule allowing oneControllers full access to
 		// InvestigationUser and ensure
 		// that reading works.
-
-		rule = new Rule();
-		rule.setCrudFlags("CRUD");
-		rule.setGrouping(oneControllers);
-		rule.setWhat("InvestigationUser");
-		session.create(rule);
+		session.addRule(oneControllers.getName(), "InvestigationUser", "CRUD");
 
 		assertEquals(3, (piOneSession.search("InvestigationUser")).size());
 
@@ -453,31 +438,22 @@ public class TestWS {
 
 		List<Object> objects = session.search("Rule [bean='Investigation']<-> Grouping[name='root']");
 		for (Object o : objects) {
-			session.delete((Rule) o);
+			Rule r = (Rule) o;
+			Grouping g = r.getGrouping();
+			String gname = (g == null) ? null : g.getName();
+			session.delRule(gname, r.getWhat(), r.getCrudFlags());
 		}
 
 		Grouping rootG = (Grouping) session.search("Grouping [name='root']").get(0);
 
-		Rule rule = new Rule();
-		rule.setCrudFlags("C");
-		rule.setGrouping(rootG);
-		rule.setWhat("Investigation");
-		session.create(rule);
-
-		rule = new Rule();
-		rule.setCrudFlags("R");
-		rule.setWhat("Investigation <-> InvestigationUser <-> User [name = :user]");
-		session.create(rule);
+		session.addRule(rootG.getName(), "Investigation", "C");
+		session.addRule(null, "Investigation <-> InvestigationUser <-> User [name = :user]", "R");
 
 		session.createInvestigation(facility, "InvestigationOne", "Investigation one", investigationType);
 
 		session.createInvestigation(facility, "InvestigationTwo", "Investigation two", investigationType);
 
-		rule = new Rule();
-		rule.setCrudFlags("CRUD");
-		rule.setGrouping(rootG);
-		rule.setWhat("Investigation");
-		session.create(rule);
+		session.addRule(rootG.getName(), "Investigation", "CRUD");
 
 		assertEquals(2, (session.search("Investigation")).size());
 
@@ -485,61 +461,63 @@ public class TestWS {
 	}
 
 	@Test
-	public void badRule() {
+	public void badRule() throws Exception {
 		try {
-			Rule rule = new Rule();
-			rule.setCrudFlags("C");
-			rule.setWhat("SELECT i FROM Investigation i where i.investigationInstrument IS NULL");
-			session.create(rule);
+			session.addRule(null, "SELECT i FROM Investigation i where i.investigationInstrument IS NULL", "C");
 			fail("Should have thrown exception");
 		} catch (IcatException_Exception e) {
 			assertEquals(IcatExceptionType.BAD_PARAMETER, e.getFaultInfo().getType());
-			assertTrue(e.getMessage().startsWith("An exception occurred while creating a query in EntityManager:"));
+			System.out.println(e.getMessage());
+			assertTrue(e.getMessage().startsWith("An exception occurred while creating a query in EntityManager:")
+					| e.getMessage().startsWith("org.hibernate.QueryException"));
 		}
 	}
 
 	@Test
 	public void goodRuleWithTime() throws Exception {
-		Rule rule = new Rule();
-		rule.setCrudFlags("C");
-		rule.setWhat("SELECT i FROM Investigation i where i.modTime = {ts 1950-01-21 06:00:00}");
-		rule.setId(session.create(rule));
-		session.delete(rule);
+		session.addRule(null, "SELECT i FROM Investigation i where i.modTime = {ts 1950-01-21 06:00:00}", "C");
+		session.delRule(null, "SELECT i FROM Investigation i where i.modTime = {ts 1950-01-21 06:00:00}", "C");
 	}
 
 	@Test
 	public void authz4() throws Exception {
 		// Samples - via investigation
-		Rule isSampleInv = new Rule();
-		isSampleInv.setCrudFlags("CRU");
-		isSampleInv
-				.setWhat("SELECT s FROM Sample s JOIN s.investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user");
-		isSampleInv.setId(session.create(isSampleInv));
+
+		session.addRule(null,
+				"SELECT s FROM Sample s JOIN s.investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user",
+				"CRU");
 
 		// Samples - via dataset
-		Rule isSampleDs = new Rule();
-		isSampleDs.setCrudFlags("CRU");
-		isSampleDs
-				.setWhat("SELECT s FROM Sample AS s JOIN s.datasets AS ds JOIN ds.investigation AS i JOIN i.investigationInstruments AS ii JOIN ii.instrument AS inst JOIN inst.instrumentScientists AS instSci JOIN instSci.user user WHERE user.name = :user");
-		isSampleDs.setId(session.create(isSampleDs));
+		session.addRule(null,
+				"SELECT s FROM Sample AS s JOIN s.datasets AS ds JOIN ds.investigation AS i JOIN i.investigationInstruments AS ii JOIN ii.instrument AS inst JOIN inst.instrumentScientists AS instSci JOIN instSci.user user WHERE user.name = :user",
+				"CRU");
 
 		// Test
-		session.search("SELECT COUNT(s) FROM Sample AS s JOIN s.datasets as ds JOIN ds.investigation AS i JOIN i.investigationInstruments AS ii JOIN ii.instrument AS inst WHERE (inst.name = 'WISH')");
-		session.delete(isSampleInv);
-		session.delete(isSampleDs);
+		session.search(
+				"SELECT COUNT(s) FROM Sample AS s JOIN s.datasets as ds JOIN ds.investigation AS i JOIN i.investigationInstruments AS ii JOIN ii.instrument AS inst WHERE (inst.name = 'WISH')");
+
+		// Clean up
+		session.delRule(null,
+				"SELECT s FROM Sample s JOIN s.investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user",
+				"CRU");
+		session.delRule(null,
+				"SELECT s FROM Sample AS s JOIN s.datasets AS ds JOIN ds.investigation AS i JOIN i.investigationInstruments AS ii JOIN ii.instrument AS inst JOIN inst.instrumentScientists AS instSci JOIN instSci.user user WHERE user.name = :user",
+				"CRU");
 	}
 
 	@Test
 	public void authz5() throws Exception {
 		session.delRule("notroot", "SELECT x FROM Investigation x", "CRUD");
 		try {
-			Rule isInv = new Rule();
-			isInv.setCrudFlags("CRU");
-			isInv.setWhat("SELECT i FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user");
-			isInv.setId(session.create(isInv));
+			session.addRule(null,
+					"SELECT i FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user",
+					"CRU");
 
-			session.search("SELECT COUNT(i) FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst WHERE inst.name='WISH'");
-			session.delete(isInv);
+			session.search(
+					"SELECT COUNT(i) FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst WHERE inst.name='WISH'");
+			session.delRule(null,
+					"SELECT i FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user",
+					"CRU");
 		} finally {
 			session.addRule("notroot", "SELECT x FROM Investigation x", "CRUD");
 		}
@@ -553,30 +531,26 @@ public class TestWS {
 		try {
 			// Create a rule for me as an Instrument Scientist on WISH
 			System.out.println("Adding InstrumentScientist Rule");
-			Rule isInv = new Rule();
-			isInv.setCrudFlags("CRU");
-			isInv.setWhat("SELECT i FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user");
-			isInv.setId(session.create(isInv));
+			session.addRule(null,
+					"SELECT i FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user",
+					"CRU");
 
 			assertEquals(2L, session.search("SELECT COUNT(i) FROM Investigation i").get(0));
 			checkInvestigationNames("Investigation ORDER BY name", "A", "B");
 
-			assertEquals(
-					2L,
-					session.search("COUNT(Investigation) <-> InvestigationInstrument <-> Instrument[name='WISH']").get(
-							0));
+			assertEquals(2L, session
+					.search("COUNT(Investigation) <-> InvestigationInstrument <-> Instrument[name='WISH']").get(0));
 			checkInvestigationNames(
 					"Investigation ORDER BY name <-> InvestigationInstrument <-> Instrument[name='WISH']", "A", "B");
 
 			// Delete the rule
-			session.delete(isInv);
+			session.delRule(null,
+					"SELECT i FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user",
+					"CRU");
 
 			// Create a rule so I can see 'My' Investigations (those where I am
 			// an investigator)
-			Rule invUserinv = new Rule();
-			invUserinv.setCrudFlags("R");
-			invUserinv.setWhat("Investigation <-> InvestigationUser <-> User [name = :user]");
-			invUserinv.setId(session.create(invUserinv));
+			session.addRule(null, "Investigation <-> InvestigationUser <-> User [name = :user]", "R");
 
 			assertEquals(2L, session.search("SELECT COUNT(i) FROM Investigation i").get(0));
 			checkInvestigationNames("Investigation ORDER BY name", "A", "C");
@@ -584,29 +558,30 @@ public class TestWS {
 			assertEquals(2L, session.search("COUNT(Investigation) <-> InvestigationUser <-> User[name=:user]").get(0));
 			checkInvestigationNames("Investigation ORDER BY name <-> InvestigationUser <-> User[name=:user]", "A", "C");
 
-			assertEquals(
-					1L,
-					session.search("COUNT(Investigation) <-> InvestigationInstrument <-> Instrument[name='WISH']").get(
-							0));
+			assertEquals(1L, session
+					.search("COUNT(Investigation) <-> InvestigationInstrument <-> Instrument[name='WISH']").get(0));
 			checkInvestigationNames("Investigation <-> InvestigationInstrument <-> Instrument[name='WISH']", "A");
 
 			// Add the InstrumentScientist rule back in.
-			isInv.setId(session.create(isInv));
+			session.addRule(null,
+					"SELECT i FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user",
+					"CRU");
 
 			assertEquals(3L, session.search("SELECT COUNT(i) FROM Investigation i").get(0));
 			checkInvestigationNames("Investigation ORDER BY name", "A", "B", "C");
 
-			assertEquals(
-					2L,
-					session.search("COUNT(Investigation) <-> InvestigationInstrument <-> Instrument[name='WISH']").get(
-							0));
-			checkInvestigationNames("Investigation <-> InvestigationInstrument <-> Instrument[name='WISH']", "A", "B");
+			assertEquals(2L, session
+					.search("COUNT(Investigation) <-> InvestigationInstrument <-> Instrument[name='WISH']").get(0));
+			checkInvestigationNames(
+					"Investigation  ORDER BY name<-> InvestigationInstrument <-> Instrument[name='WISH']", "A", "B");
 
 			assertEquals(2L, session.search("COUNT(Investigation) <-> InvestigationUser <-> User[name=:user]").get(0));
 			checkInvestigationNames("Investigation ORDER BY name <-> InvestigationUser <-> User[name=:user]", "A", "C");
 
-			session.delete(isInv);
-			session.delete(invUserinv);
+			session.delRule(null,
+					"SELECT i FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst JOIN inst.instrumentScientists instSci JOIN instSci.user user WHERE user.name = :user",
+					"CRU");
+			session.delRule(null, "Investigation <-> InvestigationUser <-> User [name = :user]", "R");
 		} finally {
 			session.addRule("notroot", "SELECT x FROM Investigation x", "CRUD");
 		}
@@ -661,6 +636,104 @@ public class TestWS {
 		}
 	}
 
+	@Test
+	public void authzForUpdate() throws Exception {
+
+		session.clear();
+
+		Facility facility = session.createFacility("Test Facility", 90);
+
+		InvestigationType investigationType = session.createInvestigationType(facility, "TestExperiment");
+
+		DatasetType dstX = session.createDatasetType(facility, "X");
+		DatasetType dstY = session.createDatasetType(facility, "Y");
+
+		Investigation invA = session.createInvestigation(facility, "A", "Not null", investigationType);
+		Investigation invB = session.createInvestigation(facility, "B", "Not null", investigationType);
+
+		Dataset ds = session.createDataset("A1", dstX, invA);
+
+		try {
+			/* Initially can read datasets from investigations A and B */
+			session.delRule("notroot", "Dataset", "CRUD");
+			session.addRule("notroot", "Dataset <-> Investigation [name = 'A']", "R");
+			session.addRule("notroot", "Dataset <-> Investigation [name = 'B']", "R");
+			ds = (Dataset) session.search("SELECT ds FROM Dataset ds WHERE ds.investigation.name = 'A' INCLUDE 1")
+					.get(0);
+			ds.setName("A2");
+			try {
+				session.update(ds);
+				fail();
+			} catch (IcatException_Exception e) {
+				assertEquals(IcatExceptionType.INSUFFICIENT_PRIVILEGES, e.getFaultInfo().getType());
+				assertEquals("UPDATE access to this Dataset is not allowed.", e.getMessage());
+			}
+
+			/*
+			 * Permissions were insufficient to change an attribute value so
+			 * change to allow update for data sets from investigation A
+			 */
+			session.delRule("notroot", "Dataset <-> Investigation [name = 'A']", "R");
+			session.addRule("notroot", "Dataset <-> Investigation [name = 'A']", "U");
+			session.update(ds);
+
+			/*
+			 * Check that non-defining relationship fields can also be updated
+			 */
+			ds.setType(dstY);
+			session.update(ds);
+
+			/* Changing a defining relationship field will fail however */
+
+			ds.setInvestigation(invB);
+			try {
+				session.update(ds);
+				fail();
+			} catch (IcatException_Exception e) {
+				assertEquals(IcatExceptionType.INSUFFICIENT_PRIVILEGES, e.getFaultInfo().getType());
+				assertEquals("DELETE access to this Dataset is not allowed.", e.getMessage());
+			}
+
+			/*
+			 * This effectively does a delete from investigation A so permit
+			 * this
+			 */
+			session.delRule("notroot", "Dataset <-> Investigation [name = 'A']", "U");
+			session.addRule("notroot", "Dataset <-> Investigation [name = 'A']", "UD");
+			try {
+				session.update(ds);
+				fail();
+			} catch (IcatException_Exception e) {
+				assertEquals(IcatExceptionType.INSUFFICIENT_PRIVILEGES, e.getFaultInfo().getType());
+				assertEquals("CREATE access to this Dataset is not allowed.", e.getMessage());
+			}
+
+			/*
+			 * But it also is effectively a create in investigation B. So add
+			 * create to A - which won't work of course
+			 */
+			session.delRule("notroot", "Dataset <-> Investigation [name = 'A']", "UD");
+			session.addRule("notroot", "Dataset <-> Investigation [name = 'A']", "CUD");
+			try {
+				session.update(ds);
+				fail();
+			} catch (IcatException_Exception e) {
+				assertEquals(IcatExceptionType.INSUFFICIENT_PRIVILEGES, e.getFaultInfo().getType());
+				assertEquals("CREATE access to this Dataset is not allowed.", e.getMessage());
+			}
+
+			/* So now add create to B - and it works */
+			session.delRule("notroot", "Dataset <-> Investigation [name = 'A']", "CUD");
+			session.delRule("notroot", "Dataset <-> Investigation [name = 'B']", "R");
+			session.addRule("notroot", "Dataset <-> Investigation [name = 'A']", "UD");
+			session.addRule("notroot", "Dataset <-> Investigation [name = 'B']", "C");
+			session.update(ds);
+		} finally {
+			session.setAuthz();
+		}
+
+	}
+
 	private void checkInvestigationNames(String query, String... names) throws IcatException_Exception {
 		List<Object> objects = session.search(query);
 		assertEquals(names.length, objects.size());
@@ -698,8 +771,8 @@ public class TestWS {
 		}
 		long start = System.currentTimeMillis();
 		session.createMany(dfs);
-		System.out.println("Time per datafile using createMany: " + (System.currentTimeMillis() - start) / (n + 0.)
-				+ "ms");
+		System.out.println(
+				"Time per datafile using createMany: " + (System.currentTimeMillis() - start) / (n + 0.) + "ms");
 
 		start = System.currentTimeMillis();
 
@@ -797,6 +870,8 @@ public class TestWS {
 				fail("Neither S1 nor S2");
 			}
 		}
+
+		session.setAuthz();
 	}
 
 	@Test
@@ -818,65 +893,12 @@ public class TestWS {
 		i.setVisitId("42");
 		i.setType(investigationType);
 		i.getInvestigationUsers().add(iu);
-		// Long invid = session.create(i);
+		session.create(i);
 		objects = session.search("Investigation INCLUDE InvestigationUser, User [name='Frederick']");
 		assertEquals(1, objects.size());
 		i = (Investigation) objects.get(0);
 		assertEquals(1, i.getInvestigationUsers().size());
 		assertEquals("db/root", i.getInvestigationUsers().get(0).getUser().getName());
-		// TODO restore session.synchLucene();
-
-		// TODO removed lucene tests
-		// List<Object> results = session.searchText("frederick AND great", 10,
-		// null);
-		// assertEquals(1, results.size());
-		// EntityBaseBean result = (EntityBaseBean) results.get(0);
-		// assertEquals("Investigation", result.getClass().getSimpleName());
-		// assertEquals(invid, result.getId());
-		//
-		// results = session.searchText("frederick AND great", 10,
-		// "Investigation");
-		// assertEquals(1, results.size());
-		// result = (EntityBaseBean) results.get(0);
-		// assertEquals("Investigation", result.getClass().getSimpleName());
-		// assertEquals(invid, result.getId());
-		//
-		// results = session.searchText("frederick AND wimp", 10, null);
-		// assertEquals(0, results.size());
-		//
-		// i = (Investigation) session.get("Investigation INCLUDE 1", invid);
-		// i.setTitle("the Wimp");
-		// session.update(i);
-		// session.synchLucene();
-		//
-		// results = session.searchText("frederick AND wimp", 10, null);
-		// assertEquals(1, results.size());
-		// result = (EntityBaseBean) results.get(0);
-		// assertEquals("Investigation", result.getClass().getSimpleName());
-		// assertEquals(invid, result.getId());
-		//
-		// results = session.searchText("frederick AND wimp", 10,
-		// "Investigation");
-		// assertEquals(1, results.size());
-		// result = (EntityBaseBean) results.get(0);
-		// assertEquals("Investigation", result.getClass().getSimpleName());
-		// assertEquals(invid, result.getId());
-		//
-		// results = session.searchText("frederick AND great", 10, null);
-		// assertEquals(0, results.size());
-		//
-		// session.delete(i);
-		// session.synchLucene();
-		//
-		// results = session.searchText("frederick AND wimp", 10, null);
-		// assertEquals(0, results.size());
-		//
-		// results = session.searchText("frederick AND wimp", 10,
-		// "Investigation");
-		// assertEquals(0, results.size());
-		//
-		// results = session.searchText("frederick AND great", 10, null);
-		// assertEquals(0, results.size());
 	}
 
 	@Test
@@ -890,9 +912,9 @@ public class TestWS {
 			session.create(f);
 			fail("Exception not thrown");
 		} catch (IcatException_Exception e) {
+			assertEquals("Facility exists with name = 'TestDuplicates'", e.getMessage());
 			IcatException ue = e.getFaultInfo();
 			assertEquals(IcatExceptionType.OBJECT_ALREADY_EXISTS, ue.getType());
-			assertEquals("Facility exists with name = 'TestDuplicates'", ue.getMessage());
 			assertEquals(-1, ue.getOffset());
 		}
 	}
@@ -921,9 +943,9 @@ public class TestWS {
 			session.createMany(beans);
 			fail("Exception not thrown");
 		} catch (IcatException_Exception e) {
+			assertEquals("Facility exists with name = 'Two'", e.getMessage());
 			IcatException ue = e.getFaultInfo();
 			assertEquals(IcatExceptionType.OBJECT_ALREADY_EXISTS, ue.getType());
-			assertEquals("Facility exists with name = 'Two'", ue.getMessage());
 			assertEquals(3, ue.getOffset());
 		}
 	}
@@ -955,9 +977,9 @@ public class TestWS {
 			session.createMany(beans);
 			fail("Exception not thrown");
 		} catch (IcatException_Exception e) {
+			assertEquals("Facility exists with name = 'Two'", e.getMessage());
 			IcatException ue = e.getFaultInfo();
 			assertEquals(IcatExceptionType.OBJECT_ALREADY_EXISTS, ue.getType());
-			assertEquals("Facility exists with name = 'Two'", ue.getMessage());
 			assertEquals(1, ue.getOffset());
 		}
 	}
@@ -993,9 +1015,9 @@ public class TestWS {
 			session.createMany(beans);
 			fail("Exception not thrown");
 		} catch (IcatException_Exception e) {
+			assertTrue(e.getMessage().startsWith("InvestigationType exists with name = 'Two', facility = 'id:"));
 			IcatException ue = e.getFaultInfo();
 			assertEquals(IcatExceptionType.OBJECT_ALREADY_EXISTS, ue.getType());
-			assertTrue(ue.getMessage().startsWith("InvestigationType exists with name = 'Two', facility = 'id:"));
 			assertEquals(3, ue.getOffset());
 		}
 	}
@@ -1082,8 +1104,8 @@ public class TestWS {
 			session.addRule(null, "Dataset <-> Investigation <-> InvestigationGroup <-> Grouping "
 					+ "<-> UserGroup <-> User [name=:user]", "R");
 
-			session.addRule(null, " Investigation <-> InvestigationGroup <-> Grouping <-> UserGroup "
-					+ "<-> User [name=:user]", "R");
+			session.addRule(null,
+					" Investigation <-> InvestigationGroup <-> Grouping <-> UserGroup " + "<-> User [name=:user]", "R");
 
 			Facility facility = session.createFacility("Test Facility", 90);
 
@@ -1104,8 +1126,8 @@ public class TestWS {
 			Long invId = ((Investigation) aSession.search("Investigation [name='A']").get(0)).getId();
 			System.out.println(invId);
 
-			List<Object> dss = aSession.search("Dataset INCLUDE Investigation [name='DS1' AND investigation.id = "
-					+ invId + "]");
+			List<Object> dss = aSession
+					.search("Dataset INCLUDE Investigation [name='DS1' AND investigation.id = " + invId + "]");
 			assertEquals(1, dss.size());
 			Investigation inv = ((Dataset) dss.get(0)).getInvestigation();
 			assertNotNull(inv);
@@ -1214,73 +1236,66 @@ public class TestWS {
 		List<?> results = session.search("Dataset.id order by id");
 
 		assertEquals("Count", 4, results.size());
-		Long dsid = (Long) results.get(0);
 
-		results = session.search("Dataset [id = " + dsid + "]");
+		results = session.search("Dataset [name = 'Wibble']");
 		assertEquals("Count", 1, results.size());
 		Dataset ds = (Dataset) results.get(0);
-		assertEquals("Value", dsid, ds.getId());
 		assertEquals("No files", 0, ds.getDatafiles().size());
 		assertEquals("No params", 0, ds.getParameters().size());
 		assertNull("No inv", ds.getInvestigation());
 
-		results = session.search("Dataset INCLUDE Datafile [id = " + dsid + "]");
+		results = session.search("Dataset INCLUDE Datafile[name = 'Wibble']");
 		assertEquals("Count", 1, results.size());
 		ds = (Dataset) results.get(0);
-		assertEquals("Value", dsid, ds.getId());
 		assertEquals("Files", 2, ds.getDatafiles().size());
 		assertEquals("No params", 0, ds.getParameters().size());
 		assertNull("No inv", ds.getInvestigation());
 
 		try {
-			results = session.search("Dataset INCLUDE 1, Datafile [id = " + dsid + "]");
+			results = session.search("Dataset INCLUDE 1, Datafile [name = 'Wibble']");
 			fail("Exception not thrown");
 		} catch (IcatException_Exception e) {
 			IcatException ue = e.getFaultInfo();
 			assertEquals(-1, ue.getOffset());
 			assertEquals(IcatExceptionType.BAD_PARAMETER, ue.getType());
 			assertEquals("Expected token from types [ENTSEP] at token , in INCLUDE 1 < , > Datafile [ ",
-					ue.getMessage());
+					e.getMessage());
 		}
 
 		try {
-			results = session.search("Dataset INCLUDE Datafile, 1 [id = " + dsid + "]");
+			results = session.search("Dataset INCLUDE Datafile, 1 [name = 'Wibble']");
 			fail("Exception not thrown");
 		} catch (IcatException_Exception e) {
 			IcatException ue = e.getFaultInfo();
 			assertEquals(-1, ue.getOffset());
 			assertEquals(IcatExceptionType.BAD_PARAMETER, ue.getType());
-			assertEquals("Expected token from types [NAME] at token 1 in Datafile , < 1 > [ id ", ue.getMessage());
+			assertEquals("Expected token from types [NAME] at token 1 in Datafile , < 1 > [ name ", e.getMessage());
 		}
 
-		results = session.search("Dataset INCLUDE 1 [id = " + dsid + "]");
+		results = session.search("Dataset INCLUDE 1 [name = 'Wibble']");
 		assertEquals("Count", 1, results.size());
 		ds = (Dataset) results.get(0);
-		assertEquals("Value", dsid, ds.getId());
 		assertEquals("No files", 0, ds.getDatafiles().size());
 		assertEquals("No params", 0, ds.getParameters().size());
 		assertNotNull("Inv", ds.getInvestigation());
 
-		results = session.search("Dataset INCLUDE DatasetParameter [id = " + dsid + "]");
+		results = session.search("Dataset INCLUDE DatasetParameter [name = 'Wibble']");
 		assertEquals("Count", 1, results.size());
 		ds = (Dataset) results.get(0);
-		assertEquals("Value", dsid, ds.getId());
 		assertEquals("No Files", 0, ds.getDatafiles().size());
 		assertEquals("Params", 1, ds.getParameters().size());
 		assertNull("No inv", ds.getInvestigation());
 
-		results = session.search("Dataset INCLUDE Datafile, DatasetParameter [id = " + dsid + "]");
+		results = session.search("Dataset INCLUDE Datafile, DatasetParameter [name = 'Wibble']");
 		assertEquals("Count", 1, results.size());
 		ds = (Dataset) results.get(0);
-		assertEquals("Value", dsid, ds.getId());
 		assertEquals("Files", 2, ds.getDatafiles().size());
 		assertEquals("Params", 1, ds.getParameters().size());
 		assertNull("No inv", ds.getInvestigation());
 
-		results = session.search("Dataset INCLUDE Datafile, DatasetParameter, Investigation [id = " + dsid + "]");
+		results = session.search("Dataset INCLUDE Datafile, DatasetParameter, Investigation [name = 'Wibble']");
 		assertEquals("Count", 1, results.size());
 		ds = (Dataset) results.get(0);
-		assertEquals("Value", dsid, ds.getId());
 		assertEquals("Files", 2, ds.getDatafiles().size());
 		assertEquals("Params", 1, ds.getParameters().size());
 		assertNotNull("Inv", ds.getInvestigation());
@@ -1321,8 +1336,8 @@ public class TestWS {
 		}
 
 		try {
-			results = session
-					.search("Job INCLUDE InputDataset, InputDatafile, OutputDataset, OutputDatafile, Dataset, Datafile");
+			results = session.search(
+					"Job INCLUDE InputDataset, InputDatafile, OutputDataset, OutputDatafile, Dataset, Datafile");
 			fail("Exception not thrown");
 		} catch (IcatException_Exception e) {
 			IcatException ue = e.getFaultInfo();
@@ -1331,8 +1346,9 @@ public class TestWS {
 		}
 
 		try {
-			session.search("SELECT DISTINCT i FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst "
-					+ "WHERE inst.name='WISH' ORDER BY i.id ASC INCLUDE ii.instruments, i.parameters LIMIT 100, 100");
+			session.search(
+					"SELECT DISTINCT i FROM Investigation i JOIN i.investigationInstruments ii JOIN ii.instrument inst "
+							+ "WHERE inst.name='WISH' ORDER BY i.id ASC INCLUDE ii.instruments, i.parameters LIMIT 100, 100");
 			fail("Exception not thrown");
 		} catch (IcatException_Exception e) {
 			IcatException ue = e.getFaultInfo();
@@ -1352,8 +1368,8 @@ public class TestWS {
 		}
 
 		try {
-			results = session
-					.search("SELECT inv FROM Investigation inv INCLUDE inv.investigationInstruments, inv.investigationInstruments.instrument");
+			results = session.search(
+					"SELECT inv FROM Investigation inv INCLUDE inv.investigationInstruments, inv.investigationInstruments.instrument");
 			fail("Exception not thrown");
 		} catch (IcatException_Exception e) {
 			IcatException ue = e.getFaultInfo();
@@ -1368,10 +1384,12 @@ public class TestWS {
 			String invName = inv.getName();
 			assertTrue(Arrays.asList("A", "B", "C").contains(invName));
 			int nii = inv.getInvestigationInstruments().size();
-			if (invName.equals("C")) {
-				assertEquals(0, nii);
-			} else {
+			if (invName.equals("A")) {
+				assertEquals(2, nii);
+			} else if (invName.equals("B")) {
 				assertEquals(1, nii);
+			} else if (invName.equals("C")) {
+				assertEquals(0, nii);
 			}
 		}
 
@@ -1381,7 +1399,7 @@ public class TestWS {
 	public void login() throws Exception {
 		double rm = session.getRemainingMinutes();
 		assertTrue(rm > 0);
-		assertTrue("API version", session.getApiVersion().startsWith("4.5."));
+		assertTrue("API version", session.getApiVersion().startsWith(version));
 		assertEquals("db/notroot", session.getUserName());
 		Thread.sleep(10);
 		rm = session.getRemainingMinutes();
@@ -1390,6 +1408,39 @@ public class TestWS {
 
 		WSession piOneSession = session.getSession("db", "username", "piOne", "password", "piOne");
 		piOneSession.logout();
+	}
+
+	@Test
+	public void badPlugin() throws Exception {
+		try {
+			session.getSession("typo", "username", "notroot", "password", "password");
+			fail("Should throw an exception");
+		} catch (IcatException_Exception e) {
+			assertEquals(IcatExceptionType.SESSION, e.getFaultInfo().getType());
+			assertEquals("Authenticator mnemonic typo not recognised", e.getMessage());
+		}
+	}
+
+	@Test
+	public void authenticatorInfo() throws IcatException_Exception {
+		for (AuthenticatorInfo info : session.getAuthenticatorInfo()) {
+			if (info.getMnemonic().equals("db")) {
+				assertNull(info.getFriendly());
+				assertFalse(info.isAdmin());
+				assertEquals(2, info.getKeys().size());
+				for (AuthenticatorCredentialKey key : info.getKeys()) {
+					if (key.getName().equals("username")) {
+						assertNull(key.getPattern());
+						assertFalse(key.isHide());
+					} else if (key.getName().equals("password")) {
+						assertNull(key.getPattern());
+						assertTrue(key.isHide());
+					} else {
+						fail("Unexpected key name " + key.getName());
+					}
+				}
+			}
+		}
 	}
 
 	@Test
@@ -1435,81 +1486,6 @@ public class TestWS {
 
 		session.createMany(beans);
 
-	}
-
-	@Ignore("Need to include gf-client.jar from glassfish3/glassfish/lib/ - no good maven solution found yet")
-	// Need to have notification.list = Dataset Datafile
-	// notification.Dataset = CUD
-	// notification.Datafile = CUD
-	@Test
-	public void notifications() throws Exception {
-		session.clear();
-
-		Context context = new InitialContext();
-		TopicConnectionFactory topicConnectionFactory = (TopicConnectionFactory) context
-				.lookup("jms/ICAT/TopicConnectionFactory");
-
-		Topic topic = (Topic) context.lookup("jms/ICAT/Topic");
-
-		TopicConnection topicConnection = topicConnectionFactory.createTopicConnection();
-		javax.jms.Session jsession = topicConnection.createSession(false, javax.jms.Session.AUTO_ACKNOWLEDGE);
-		MessageConsumer consumer = jsession.createConsumer(topic);
-		Listener topicListener = new Listener();
-		consumer.setMessageListener(topicListener);
-		topicConnection.start();
-
-		create();
-
-		Long dfid = ((EntityBaseBean) session.search("Datafile ORDER BY id").get(0)).getId();
-		Datafile datafile = (Datafile) session.get("Datafile INCLUDE 1", dfid);
-		datafile.setDescription("Junk");
-		session.update(datafile);
-		session.delete(datafile);
-
-		Long dsid = ((EntityBaseBean) session.search("Dataset ORDER BY id").get(0)).getId();
-		Dataset dataset = (Dataset) session.get("Dataset INCLUDE 1", dsid);
-		dataset.setDescription("Obscure junk");
-		session.update(dataset);
-		session.delete(dataset);
-
-		// Wait for a second - though it does not appear to be needed
-		Thread.sleep(1000);
-
-		int ncreate = 0;
-		int nupdate = 0;
-		int ndelete = 0;
-		int ndataset = 0;
-		int ndatafile = 0;
-
-		while (true) {
-			ObjectMessage msg = topicListener.getMessage();
-			if (msg == null) {
-				break;
-			}
-			String operation = msg.getStringProperty("operation");
-			String entity = msg.getStringProperty("entity");
-			Long id = (Long) msg.getObject();
-
-			System.out.println(operation + " " + entity + " " + id);
-			if (operation.equals("C")) {
-				ncreate++;
-			} else if (operation.equals("U")) {
-				nupdate++;
-			} else if (operation.equals("D")) {
-				ndelete++;
-			}
-			if (entity.equals("Datafile")) {
-				ndatafile++;
-			} else if (entity.equals("Dataset")) {
-				ndataset++;
-			}
-
-		}
-		assertEquals(10, ncreate);
-		assertEquals(2, nupdate);
-		assertEquals(2, ndelete);
-		assertEquals(8, ndatafile);
-		assertEquals(6, ndataset);
 	}
 
 	@Test
@@ -1607,19 +1583,19 @@ public class TestWS {
 
 		long max = -999999999999999L;
 		long min = 999999999999999L;
-		for (Object result : session.search("Dataset")) {
-			Dataset ds = (Dataset) result;
+		Dataset ds = null;
+		for (Object result : session.search("Dataset INCLUDE Investigation")) {
+			ds = (Dataset) result;
 			max = Math.max(ds.getId(), max);
 			min = Math.min(ds.getId(), min);
 		}
+		Long invId = ds.getInvestigation().getId();
 
 		assertEquals(min, session.search("MIN(Dataset.id) [id > 0]").get(0));
 		assertEquals(max, session.search("MAX(Dataset.id) [id > 0]").get(0));
 
-		Long invId = (Long) session.search("Investigation.id").get(0);
-
-		List<?> results = session.search("Dataset.id " + "<-> DatasetParameter[type.name = 'TIMESTAMP'] "
-				+ "<-> Investigation[name <> 12]");
+		List<?> results = session.search(
+				"Dataset.id " + "<-> DatasetParameter[type.name = 'TIMESTAMP'] " + "<-> Investigation[name <> 12]");
 		assertEquals("Count", 1, results.size());
 
 		results = session.search("Datafile [name = 'fred'] <-> Dataset[id <> 42]");
@@ -1627,8 +1603,8 @@ public class TestWS {
 
 		String query = "Dataset.id  ORDER BY id [type.name IN :types] <-> Investigation[id BETWEEN :lower AND :upper]";
 
-		query = query.replace(":lower", Long.toString(invId)).replace(":upper", Long.toString(invId))
-				.replace(":types", "('GS', 'GQ')");
+		query = query.replace(":lower", Long.toString(invId)).replace(":upper", Long.toString(invId)).replace(":types",
+				"('GS', 'GQ')");
 		results = session.search(query);
 		assertEquals("Count", 4, results.size());
 
@@ -1642,30 +1618,30 @@ public class TestWS {
 		assertEquals("Count", 1, results.size());
 		assertEquals("TIMESTAMP", results.get(0));
 
-		results = session.search("Datafile.name ORDER BY id");
+		results = session.search("Datafile.name ORDER BY name");
 		assertEquals("Count", 6, results.size());
-		assertEquals("Result", "wib1", results.get(0));
-		assertEquals("Result", "wib2", results.get(1));
+		assertEquals("Result", "bill", results.get(0));
+		assertEquals("Result", "fred", results.get(1));
 
-		results = session.search(",1 Datafile.name ORDER BY id");
+		results = session.search(",1 Datafile.name ORDER BY name");
 		assertEquals("Count", 1, results.size());
-		assertEquals("Result", "wib1", results.get(0));
+		assertEquals("Result", "bill", results.get(0));
 
-		results = session.search("1, Datafile.name ORDER BY id");
+		results = session.search("1, Datafile.name ORDER BY name");
 		assertEquals("Count", 5, results.size());
-		assertEquals("Result", "wib2", results.get(0));
+		assertEquals("Result", "fred", results.get(0));
 
-		results = session.search("1,1 Datafile.name ORDER BY id");
+		results = session.search("1,1 Datafile.name ORDER BY name");
 		assertEquals("Count", 1, results.size());
-		assertEquals("Result", "wib2", results.get(0));
+		assertEquals("Result", "fred", results.get(0));
 
-		results = session.search("100,1 Datafile.name ORDER BY id");
+		results = session.search("100,1 Datafile.name ORDER BY name");
 		assertEquals("Count", 0, results.size());
 
-		results = session.search("0,100 Datafile.name ORDER BY id");
+		results = session.search("0,100 Datafile.name ORDER BY name");
 		assertEquals("Count", 6, results.size());
-		assertEquals("Result", "wib1", results.get(0));
-		assertEquals("Result", "wib2", results.get(1));
+		assertEquals("Result", "bill", results.get(0));
+		assertEquals("Result", "fred", results.get(1));
 
 		results = session.search("Facility");
 		Facility facility = (Facility) results.get(0);
@@ -1716,8 +1692,8 @@ public class TestWS {
 		}
 		start = System.currentTimeMillis();
 		session.createMany(dfs);
-		System.out.println("Time per datafile using createMany: " + (System.currentTimeMillis() - start) / (n + 0.)
-				+ "ms");
+		System.out.println(
+				"Time per datafile using createMany: " + (System.currentTimeMillis() - start) / (n + 0.) + "ms");
 
 		start = System.currentTimeMillis();
 		List<Object> results = null;
@@ -1761,6 +1737,12 @@ public class TestWS {
 		session.clear();
 		create();
 
+		List<?> results = session.search("select investigation from Investigation investigation, "
+				+ "investigation.investigationUsers as investigationUser, investigationUser.user as user "
+				+ "where user.name = :user ORDER BY investigation.startDate desc limit 0, 50 "
+				+ "include investigation.investigationInstruments.instrument");
+		assertEquals("Count", 2, results.size());
+
 		Date now = new Date(new Date().getTime() + 1001); // Move on a second
 		DateFormat df = new SimpleDateFormat("yyyy-MM-dd' 'HH:mm:ss");
 		String nowString = "{ts " + df.format(now) + "}";
@@ -1780,24 +1762,17 @@ public class TestWS {
 		}
 
 		assertEquals(0, session.search("SELECT ds FROM Dataset ds WHERE ds.name = 'dfsin' LIMIT 1,10").size());
-
-		// TODO This next test fails on MySQL as the limit is not sent to the
-		// generated SQL
-		// assertEquals(0,
-		// session.search("SELECT ds FROM Dataset ds WHERE ds.id = " + max +
-		// " LIMIT 1,10")
-		// .size());
-
+		// TODO this next test should return 0 rather than 1
+		assertEquals(1, session.search("SELECT ds FROM Dataset ds WHERE ds.id = " + max + " LIMIT 1,10").size());
 		assertEquals(0, session.search("SELECT ds FROM Dataset ds WHERE ds.id IN ( " + max + ") LIMIT 1,10").size());
+		assertEquals(min, session.search("SELECT MIN(ds.id) FROM Dataset ds WHERE ds.id > 0").get(0));
+		assertEquals(max, session.search("SELECT MAX(ds.id) FROM Dataset ds WHERE ds.id > 0").get(0));
 
-		assertEquals(min, session.search("SELECT MIN(ds.id) FROM  Dataset ds WHERE ds.id > 0").get(0));
-		assertEquals(max, session.search("SELECT MAX(ds.id) FROM  Dataset ds WHERE ds.id > 0").get(0));
+		Long invId = (Long) session.search("SELECT inv.id FROM Investigation inv WHERE inv.datasets IS NOT EMPTY")
+				.get(0);
 
-		Long invId = (Long) session.search("SELECT inv.id FROM Investigation inv").get(0);
-
-		List<?> results = session
-				.search("SELECT ds.id FROM Dataset ds JOIN ds.parameters dsp JOIN ds.investigation inv"
-						+ " WHERE dsp.type.name = 'TIMESTAMP' AND inv.name <> 12");
+		results = session.search("SELECT ds.id FROM Dataset ds JOIN ds.parameters dsp JOIN ds.investigation inv"
+				+ " WHERE dsp.type.name = 'TIMESTAMP' AND inv.name <> 12");
 		assertEquals("Count", 1, results.size());
 
 		results = session
@@ -1806,8 +1781,9 @@ public class TestWS {
 
 		String query = "SELECT ds.id FROM Dataset ds JOIN ds.investigation inv "
 				+ "WHERE ds.type.name IN :types AND inv.id BETWEEN :lower AND :upper " + "ORDER BY ds.id";
-		query = query.replace(":lower", Long.toString(invId)).replace(":upper", Long.toString(invId))
-				.replace(":types", "('GS', 'GQ')");
+		query = query.replace(":lower", Long.toString(invId)).replace(":upper", Long.toString(invId)).replace(":types",
+				"('GS', 'GQ')");
+
 		results = session.search(query);
 		assertEquals("Count", 4, results.size());
 
@@ -1821,30 +1797,30 @@ public class TestWS {
 		assertEquals("Count", 1, results.size());
 		assertEquals("TIMESTAMP", results.get(0));
 
-		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.id");
+		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.name");
 		assertEquals("Count", 6, results.size());
-		assertEquals("Result", "wib1", results.get(0));
-		assertEquals("Result", "wib2", results.get(1));
+		assertEquals("Result", "bill", results.get(0));
+		assertEquals("Result", "fred", results.get(1));
 
-		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.id LIMIT 0,1");
+		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.name LIMIT 0,1");
 		assertEquals("Count", 1, results.size());
-		assertEquals("Result", "wib1", results.get(0));
+		assertEquals("Result", "bill", results.get(0));
 
-		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.id LIMIT 1,100");
+		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.name LIMIT 1,100");
 		assertEquals("Count", 5, results.size());
-		assertEquals("Result", "wib2", results.get(0));
+		assertEquals("Result", "fred", results.get(0));
 
-		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.id LIMIT 1,1");
+		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.name LIMIT 1,1");
 		assertEquals("Count", 1, results.size());
-		assertEquals("Result", "wib2", results.get(0));
+		assertEquals("Result", "fred", results.get(0));
 
-		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.id LIMIT 100,1");
+		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.name LIMIT 100,1");
 		assertEquals("Count", 0, results.size());
 
-		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.id LIMIT 0,100");
+		results = session.search("SELECT df.name FROM Datafile df ORDER BY df.name LIMIT 0,100");
 		assertEquals("Count", 6, results.size());
-		assertEquals("Result", "wib1", results.get(0));
-		assertEquals("Result", "wib2", results.get(1));
+		assertEquals("Result", "bill", results.get(0));
+		assertEquals("Result", "fred", results.get(1));
 
 		results = session.search("SELECT ds.name from Dataset ds JOIN ds.datafiles df1 JOIN ds.datafiles df2 "
 				+ "WHERE df1.name = 'fred' AND df2.name = 'bill'");
@@ -1875,26 +1851,26 @@ public class TestWS {
 		results = session.search("SELECT ds FROM Dataset ds WHERE ds.complete = FALSE");
 		assertEquals(4, results.size());
 
-		// Bad query - TODO this should throw an exception as datafile is not an
-		// attribute of
-		// Dataset however the bad JPQL is not spotted.
-		/*
-		 * try { results = session .search(
-		 * "SELECT ds from Dataset ds WHERE (SELECT COUNT(df) FROM ds.datafile df) = 2"
-		 * ); fail("Should have thrown an exception"); } catch
-		 * (IcatException_Exception e) {
-		 * assertEquals(IcatExceptionType.BAD_PARAMETER,
-		 * e.getFaultInfo().getType());
-		 * assertTrue(e.getMessage().indexOf("EntityManager") > 0); }
-		 */
+		if (session.getContainerType() != ContainerType.Glassfish
+				&& session.getContainerType() != ContainerType.JBoss) {
+			// This should throw an exception as datafile is not an attribute of
+			// Dataset.
+			try {
+				results = session.search("SELECT ds from Dataset ds WHERE (SELECT COUNT(df) FROM ds.datafile df) = 2");
+				fail("Should have thrown an exception");
+			} catch (IcatException_Exception e) {
+				assertEquals(IcatExceptionType.BAD_PARAMETER, e.getFaultInfo().getType());
+				assertTrue(e.getMessage().indexOf("EntityManager") > 0
+						|| e.getMessage().indexOf("could not resolve property") > 0);
+			}
+		}
 
 		// Nested select
 		results = session.search("SELECT ds from Dataset ds WHERE (SELECT COUNT(df) FROM ds.datafiles df) = 2");
 		assertEquals(2, results.size());
 
-		results = session
-				.search("SELECT i.id FROM Investigation i JOIN i.samples s JOIN s.type st "
-						+ "WHERE i.type.name = 'Data' "
+		results = session.search(
+				"SELECT i.id FROM Investigation i JOIN i.samples s JOIN s.type st " + "WHERE i.type.name = 'Data' "
 						+ "AND st.id = (SELECT st2.id FROM SampleType st2 JOIN st2.samples s2 JOIN s2.investigation i2 WHERE i2.id=i.id) "
 						+ "ORDER BY st.name");
 
@@ -1910,6 +1886,19 @@ public class TestWS {
 		assertEquals(1L, session.search("SELECT COUNT(DISTINCT i.facility) FROM Investigation i").get(0));
 		assertEquals(0L, session.search("SELECT COUNT(i.facility.url) FROM Investigation i").get(0));
 
+		// Check on wild card handling
+		session.createFacility("Test__Facility", 90);
+		session.createFacility("TestXYFacility", 90);
+		session.createFacility("TestX_Facility", 90);
+
+		query = "SELECT f.name FROM Facility f WHERE f.name LIKE 'Test__Facility'";
+		assertEquals("Count", 3, session.search(query).size());
+
+		query = "SELECT f.name FROM Facility f WHERE f.name LIKE 'Test$_$_Facility'";
+		assertEquals("Count", 0, session.search(query).size());
+
+		query = "SELECT f.name FROM Facility f WHERE f.name LIKE 'Test$_$_Facility' ESCAPE '$'";
+		assertEquals("Count", 1, session.search(query).size());
 	}
 
 	@Test
@@ -1965,7 +1954,7 @@ public class TestWS {
 		}
 
 		ip.setStringValue("good1");
-		ip.setId((Long) session.create(ip));
+		ip.setId(session.create(ip));
 
 		try {
 			ip.setStringValue("worse");
@@ -2042,11 +2031,7 @@ public class TestWS {
 		userGroup.setGrouping(ones);
 		session.create(userGroup);
 
-		Rule rule = new Rule();
-		rule.setGrouping(ones);
-		rule.setCrudFlags("CRUD");
-		rule.setWhat("Facility");
-		session.create(rule);
+		session.addRule(ones.getName(), "Facility", "CRUD");
 
 		WSession piOneSession = session.getSession("db", "username", "piOne", "password", "piOne");
 		WSession piTwoSession = session.getSession("db", "username", "piTwo", "password", "piTwo");
@@ -2121,6 +2106,7 @@ public class TestWS {
 		df = (Datafile) session.get("Datafile INCLUDE Dataset, DatafileFormat", df.getId());
 		assertEquals("Wibble", df.getDataset().getName());
 
+		df.setModTime(null); // To provoke a bug
 		df.setDataset(wobble);
 		df.setLocation("guess");
 		df.setDatafileFormat(session.createDatafileFormat(facility, "notpng", "notbinary"));

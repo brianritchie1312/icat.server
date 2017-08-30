@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 
+import javax.json.stream.JsonGenerator;
 import javax.persistence.CascadeType;
 import javax.persistence.Column;
 import javax.persistence.GeneratedValue;
@@ -30,7 +31,6 @@ import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 import javax.xml.bind.annotation.XmlTransient;
 
-import org.apache.log4j.Logger;
 import org.icatproject.core.Constants;
 import org.icatproject.core.IcatException;
 import org.icatproject.core.entity.Application;
@@ -59,7 +59,6 @@ import org.icatproject.core.entity.InvestigationType;
 import org.icatproject.core.entity.InvestigationUser;
 import org.icatproject.core.entity.Job;
 import org.icatproject.core.entity.Keyword;
-import org.icatproject.core.entity.Log;
 import org.icatproject.core.entity.ParameterType;
 import org.icatproject.core.entity.PermissibleStringValue;
 import org.icatproject.core.entity.PublicStep;
@@ -74,6 +73,8 @@ import org.icatproject.core.entity.Study;
 import org.icatproject.core.entity.StudyInvestigation;
 import org.icatproject.core.entity.User;
 import org.icatproject.core.entity.UserGroup;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 // Note that this does not use a Singleton Bean as there is no need for the
 // extra complexity and
@@ -100,13 +101,17 @@ public class EntityInfoHandler {
 		private final Map<Field, Method> updaters;
 		private List<Field> fields;
 		public Map<String, Method> gettersFromName;
+		public Map<String, Relationship> relationshipsByName;
+		public Set<Field> relInKey;
+		private boolean hasLuceneDoc;
 
 		public PrivateEntityInfo(Set<Relationship> rels, List<Field> notNullableFields, Map<Field, Method> getters,
 				Map<String, Method> gettersFromName, Map<Field, Integer> stringFields, Map<Field, Method> setters,
 				Map<Field, Method> updaters, List<Field> constraintFields, String classComment,
 				Map<Field, String> fieldComments, Set<Relationship> ones, Set<Field> attributes,
 				Constructor<? extends EntityBaseBean> constructor, Map<String, Field> fieldByName, String exportHeader,
-				String exportNull, List<Field> fields, String exportHeaderAll) {
+				String exportNull, List<Field> fields, String exportHeaderAll,
+				Map<String, Relationship> relationshipsByName, Set<Field> relInKey, boolean hasLuceneDoc) {
 			this.relatedEntities = rels;
 			this.notNullableFields = notNullableFields;
 			this.getters = getters;
@@ -125,6 +130,9 @@ public class EntityInfoHandler {
 			this.exportNull = exportNull;
 			this.fields = fields;
 			this.exportHeaderAll = exportHeaderAll;
+			this.relationshipsByName = relationshipsByName;
+			this.relInKey = relInKey;
+			this.hasLuceneDoc = hasLuceneDoc;
 		}
 	}
 
@@ -144,8 +152,8 @@ public class EntityInfoHandler {
 				Class<? extends EntityBaseBean> destinationBean, boolean collection, boolean cascaded,
 				Method inverseSetter) {
 			if (collection != cascaded) {
-				throw new RuntimeException("Collection and Cascaded must match for this code to work "
-						+ destinationBean + " " + field);
+				throw new RuntimeException(
+						"Collection and Cascaded must match for this code to work " + destinationBean + " " + field);
 			}
 			this.originBean = originBean;
 			this.destinationBean = destinationBean;
@@ -187,13 +195,12 @@ public class EntityInfoHandler {
 	private static List<Class<? extends EntityBaseBean>> entities = Arrays.asList(User.class, Grouping.class,
 			UserGroup.class, Rule.class, PublicStep.class, Facility.class, DatafileFormat.class, Application.class,
 			Instrument.class, InvestigationType.class, DatasetType.class, ParameterType.class, SampleType.class,
-			Investigation.class, Sample.class, Dataset.class, Datafile.class, FacilityCycle.class,
-			DataCollection.class, DataCollectionDatafile.class, DataCollectionDataset.class,
-			DataCollectionParameter.class, DatafileParameter.class, DatasetParameter.class,
-			InvestigationParameter.class, Job.class, Keyword.class, Log.class, PermissibleStringValue.class,
-			Publication.class, RelatedDatafile.class, SampleParameter.class, Shift.class, Study.class,
-			InvestigationUser.class, InvestigationGroup.class, StudyInvestigation.class, InvestigationInstrument.class,
-			InstrumentScientist.class);
+			Investigation.class, Sample.class, Dataset.class, Datafile.class, FacilityCycle.class, DataCollection.class,
+			DataCollectionDatafile.class, DataCollectionDataset.class, DataCollectionParameter.class,
+			DatafileParameter.class, DatasetParameter.class, InvestigationParameter.class, Job.class, Keyword.class,
+			PermissibleStringValue.class, Publication.class, RelatedDatafile.class, SampleParameter.class, Shift.class,
+			Study.class, InvestigationUser.class, InvestigationGroup.class, StudyInvestigation.class,
+			InvestigationInstrument.class, InstrumentScientist.class);
 	private static Set<String> entityNames = new HashSet<>();
 
 	private static String[] systemAttributes = { "createId", "createTime", "modId", "modTime" };
@@ -202,7 +209,7 @@ public class EntityInfoHandler {
 
 	public static EntityInfoHandler instance = new EntityInfoHandler();
 
-	protected final static Logger logger = Logger.getLogger(EntityInfoHandler.class);
+	protected final static Logger logger = LoggerFactory.getLogger(EntityInfoHandler.class);
 
 	static {
 		for (Class<? extends EntityBaseBean> entity : entities) {
@@ -212,6 +219,13 @@ public class EntityInfoHandler {
 		alphabeticEntityNames = new ArrayList<>(entityNames);
 		Collections.sort(alphabeticEntityNames);
 	}
+
+	private final static Comparator<? super Field> fieldComparator = new Comparator<Field>() {
+		@Override
+		public int compare(Field o1, Field o2) {
+			return o1.getName().compareTo(o2.getName());
+		}
+	};
 
 	public static Set<String> getAlphabeticEntityNames() {
 		return entityNames;
@@ -225,18 +239,18 @@ public class EntityInfoHandler {
 				final Class<EntityBaseBean> eklass = (Class<EntityBaseBean>) klass;
 				return eklass;
 			} else {
-				throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER, tableName
-						+ " is not an EntityBaseBean");
+				throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER,
+						tableName + " is not an EntityBaseBean");
 			}
 		} catch (final ClassNotFoundException e) {
-			throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER, tableName
-					+ " is not an EntityBaseBean");
+			throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER,
+					tableName + " is not an EntityBaseBean");
 		}
 	}
 
 	public static List<String> getEntityNamesList() {
 		return alphabeticEntityNames;
-	}
+	};
 
 	public static List<String> getExportEntityNames() {
 		return exportEntityNames;
@@ -244,16 +258,9 @@ public class EntityInfoHandler {
 
 	public static synchronized EntityInfoHandler getInstance() {
 		return instance;
-	};
+	}
 
 	private final HashMap<Class<? extends EntityBaseBean>, PrivateEntityInfo> map = new HashMap<Class<? extends EntityBaseBean>, PrivateEntityInfo>();
-
-	private final static Comparator<? super Field> fieldComparator = new Comparator<Field>() {
-		@Override
-		public int compare(Field o1, Field o2) {
-			return o1.getName().compareTo(o2.getName());
-		}
-	};
 
 	private EntityInfoHandler() {
 	}
@@ -285,12 +292,13 @@ public class EntityInfoHandler {
 					all = Arrays.asList(oneToMany.cascade()).contains(CascadeType.ALL);
 					if (!all && oneToMany.cascade().length != 0) {
 						throw new IcatException(IcatException.IcatExceptionType.INTERNAL,
-								"Cascade must be all or nothing " + objectClass.getSimpleName() + "." + field.getName());
+								"Cascade must be all or nothing " + objectClass.getSimpleName() + "."
+										+ field.getName());
 					}
 					mappedBy = oneToMany.mappedBy();
 					if (mappedBy == null) {
-						throw new IcatException(IcatException.IcatExceptionType.INTERNAL, "MappedBy must be set for "
-								+ objectClass.getSimpleName() + "." + field.getName());
+						throw new IcatException(IcatException.IcatExceptionType.INTERNAL,
+								"MappedBy must be set for " + objectClass.getSimpleName() + "." + field.getName());
 					}
 				} else {
 					throw new IcatException(IcatException.IcatExceptionType.INTERNAL,
@@ -335,7 +343,8 @@ public class EntityInfoHandler {
 					all = Arrays.asList(manyToOne.cascade()).contains(CascadeType.ALL);
 					if (!all && manyToOne.cascade().length != 0) {
 						throw new IcatException(IcatException.IcatExceptionType.INTERNAL,
-								"Cascade must be all or nothing " + objectClass.getSimpleName() + "." + field.getName());
+								"Cascade must be all or nothing " + objectClass.getSimpleName() + "."
+										+ field.getName());
 					}
 				} else {
 					throw new IcatException(IcatException.IcatExceptionType.INTERNAL,
@@ -351,16 +360,16 @@ public class EntityInfoHandler {
 
 		}
 
+		final Set<Relationship> includesToFollow = new HashSet<Relationship>();
 		final Set<Relationship> ones = new HashSet<Relationship>();
+		final Map<String, Relationship> relationshipsByName = new HashMap<>();
+
 		for (Relationship rel : rels) {
+			includesToFollow.add(rel);
 			if (!rel.collection) {
 				ones.add(rel);
 			}
-		}
-
-		final Set<Relationship> includesToFollow = new HashSet<Relationship>();
-		for (Relationship rel : rels) {
-			includesToFollow.add(rel);
+			relationshipsByName.put(rel.getField().getName(), rel);
 		}
 
 		final List<Field> notNullableFields = new ArrayList<Field>();
@@ -450,15 +459,15 @@ public class EntityInfoHandler {
 					setters.put(field, m);
 					if (settable) {
 						if (updaters.put(field, m) != null) {
-							throw new IcatException(IcatException.IcatExceptionType.INTERNAL, "set" + prop
-									+ " is ambiguous");
+							throw new IcatException(IcatException.IcatExceptionType.INTERNAL,
+									"set" + prop + " is ambiguous");
 						}
 					}
 				}
 			}
 			if (settable && updaters.get(field) == null) {
-				throw new IcatException(IcatException.IcatExceptionType.INTERNAL, "set" + prop + " not found for "
-						+ objc.getSimpleName());
+				throw new IcatException(IcatException.IcatExceptionType.INTERNAL,
+						"set" + prop + " not found for " + objc.getSimpleName());
 			}
 
 			if (getters.get(field).getReturnType().equals(String.class)) {
@@ -477,14 +486,14 @@ public class EntityInfoHandler {
 				for (String colNam : Arrays.asList(constraint.columnNames())) {
 					Field col = dbCols.get(colNam);
 					if (col == null) {
-						throw new IcatException(IcatException.IcatExceptionType.INTERNAL, "Column " + colNam
-								+ " mentioned in UniqueConstraint of " + objectClass.getSimpleName()
-								+ " table is not present in entity");
+						throw new IcatException(IcatException.IcatExceptionType.INTERNAL,
+								"Column " + colNam + " mentioned in UniqueConstraint of " + objectClass.getSimpleName()
+										+ " table is not present in entity");
 					}
 					if (!nnf.contains(col)) {
-						throw new IcatException(IcatException.IcatExceptionType.INTERNAL, "Column " + colNam
-								+ " mentioned in UniqueConstraint of " + objectClass.getSimpleName()
-								+ " table must be annotated as 'nullable = false'");
+						throw new IcatException(IcatException.IcatExceptionType.INTERNAL,
+								"Column " + colNam + " mentioned in UniqueConstraint of " + objectClass.getSimpleName()
+										+ " table must be annotated as 'nullable = false'");
 					}
 					constraintFields.add(col);
 				}
@@ -528,9 +537,8 @@ public class EntityInfoHandler {
 		}
 
 		for (final Field field : fields) {
-			if (Arrays.asList("id", "modTime", "createTime", "createId", "modId", "beanManager").contains(
-					field.getName())
-					|| field.getAnnotation(OneToMany.class) != null) {
+			if (Arrays.asList("id", "modTime", "createTime", "createId", "modId", "beanManager")
+					.contains(field.getName()) || field.getAnnotation(OneToMany.class) != null) {
 				continue;
 			}
 
@@ -565,8 +573,8 @@ public class EntityInfoHandler {
 
 		Iterator<Field> iter = fields.iterator();
 		while (iter.hasNext()) {
-			if (Arrays.asList("id", "modTime", "createTime", "createId", "modId", "beanManager").contains(
-					iter.next().getName())) {
+			if (Arrays.asList("id", "modTime", "createTime", "createId", "modId", "beanManager")
+					.contains(iter.next().getName())) {
 				iter.remove();
 			}
 		}
@@ -576,9 +584,24 @@ public class EntityInfoHandler {
 			gettersFromName.put(entry.getKey().getName(), entry.getValue());
 		}
 
-		return new PrivateEntityInfo(rels, notNullableFields, getters, gettersFromName, stringFields, setters,
-				updaters, constraintFields, commentString, comments, ones, attributes, constructor, fieldsByName,
-				exportHeader.toString(), exportNull.toString(), fields, exportHeaderAll.toString());
+		Set<Field> relInKey = new HashSet<>();
+		for (Relationship rel : ones) {
+			if (constraintFields.contains(rel.field)) {
+				relInKey.add(rel.field);
+			}
+		}
+
+		boolean hasLuceneDoc = true;
+		try {
+			objectClass.getDeclaredMethod("getDoc", JsonGenerator.class);
+		} catch (NoSuchMethodException e) {
+			hasLuceneDoc = false;
+		}
+
+		return new PrivateEntityInfo(rels, notNullableFields, getters, gettersFromName, stringFields, setters, updaters,
+				constraintFields, commentString, comments, ones, attributes, constructor, fieldsByName,
+				exportHeader.toString(), exportNull.toString(), fields, exportHeaderAll.toString(), relationshipsByName,
+				relInKey, hasLuceneDoc);
 	}
 
 	/**
@@ -731,23 +754,20 @@ public class EntityInfoHandler {
 		}
 	}
 
-	private List<Field> getNormalFields(Class<?> cobj) {
-		List<Field> fields = new ArrayList<Field>(Arrays.asList(cobj.getDeclaredFields()));
-		final Iterator<Field> iter = fields.iterator();
-		while (iter.hasNext()) {
-			final Field f = iter.next();
-			int modifier = f.getModifiers();
-			if (f.getName().startsWith("_")) {
-				iter.remove();
-			} else if (Modifier.isStatic(modifier)) {
-				iter.remove();
-			} else if (Modifier.isTransient(modifier)) {
-				iter.remove();
-			} else if (f.isAnnotationPresent(XmlTransient.class)) {
-				iter.remove();
+	/**
+	 * Returns all user settable fields (not id, createId, modId, createTime nor
+	 * modTime
+	 */
+	public List<Field> getFields(Class<? extends EntityBaseBean> objectClass) throws IcatException {
+		PrivateEntityInfo ei = null;
+		synchronized (this.map) {
+			ei = this.map.get(objectClass);
+			if (ei == null) {
+				ei = this.buildEi(objectClass);
+				this.map.put(objectClass, ei);
 			}
+			return ei.fields;
 		}
-		return fields;
 	}
 
 	public Map<String, Field> getFieldsByName(Class<? extends EntityBaseBean> objectClass) throws IcatException {
@@ -792,6 +812,25 @@ public class EntityInfoHandler {
 		}
 	}
 
+	private List<Field> getNormalFields(Class<?> cobj) {
+		List<Field> fields = new ArrayList<Field>(Arrays.asList(cobj.getDeclaredFields()));
+		final Iterator<Field> iter = fields.iterator();
+		while (iter.hasNext()) {
+			final Field f = iter.next();
+			int modifier = f.getModifiers();
+			if (f.getName().startsWith("_")) {
+				iter.remove();
+			} else if (Modifier.isStatic(modifier)) {
+				iter.remove();
+			} else if (Modifier.isTransient(modifier)) {
+				iter.remove();
+			} else if (f.isAnnotationPresent(XmlTransient.class)) {
+				iter.remove();
+			}
+		}
+		return fields;
+	}
+
 	public List<Field> getNotNullableFields(Class<? extends EntityBaseBean> objectClass) throws IcatException {
 		PrivateEntityInfo ei = null;
 		synchronized (this.map) {
@@ -825,6 +864,36 @@ public class EntityInfoHandler {
 				this.map.put(objectClass, ei);
 			}
 			return ei.relatedEntities;
+		}
+	}
+
+	/**
+	 * Map from field name to relationship
+	 * 
+	 * @throws IcatException
+	 */
+	public Map<String, Relationship> getRelationshipsByName(Class<? extends EntityBaseBean> objectClass)
+			throws IcatException {
+		PrivateEntityInfo ei = null;
+		synchronized (this.map) {
+			ei = this.map.get(objectClass);
+			if (ei == null) {
+				ei = this.buildEi(objectClass);
+				this.map.put(objectClass, ei);
+			}
+			return ei.relationshipsByName;
+		}
+	}
+
+	public Set<Field> getRelInKey(Class<? extends EntityBaseBean> objectClass) throws IcatException {
+		PrivateEntityInfo ei = null;
+		synchronized (this.map) {
+			ei = this.map.get(objectClass);
+			if (ei == null) {
+				ei = this.buildEi(objectClass);
+				this.map.put(objectClass, ei);
+			}
+			return ei.relInKey;
 		}
 	}
 
@@ -875,11 +944,8 @@ public class EntityInfoHandler {
 		}
 	}
 
-	/**
-	 * Returns all user settable fields (not id, createId, modId, createTime nor
-	 * modTime
-	 */
-	public List<Field> getFields(Class<? extends EntityBaseBean> objectClass) throws IcatException {
+	/** Return true if getDoc() method exists else false */
+	public boolean hasLuceneDoc(Class<? extends EntityBaseBean> objectClass) throws IcatException {
 		PrivateEntityInfo ei = null;
 		synchronized (this.map) {
 			ei = this.map.get(objectClass);
@@ -887,7 +953,7 @@ public class EntityInfoHandler {
 				ei = this.buildEi(objectClass);
 				this.map.put(objectClass, ei);
 			}
-			return ei.fields;
+			return ei.hasLuceneDoc;
 		}
 	}
 

@@ -1,7 +1,6 @@
 package org.icatproject.core.entity;
 
 import java.io.Serializable;
-import java.util.List;
 
 import javax.ejb.EJB;
 import javax.persistence.Column;
@@ -17,8 +16,8 @@ import javax.persistence.Table;
 import javax.persistence.Transient;
 import javax.xml.bind.annotation.XmlTransient;
 
-import org.apache.log4j.Logger;
 import org.icatproject.core.IcatException;
+import org.icatproject.core.manager.EntityBeanManager.PersistMode;
 import org.icatproject.core.manager.GateKeeper;
 import org.icatproject.core.manager.SingletonFinder;
 import org.icatproject.core.oldparser.OldInput;
@@ -26,12 +25,10 @@ import org.icatproject.core.oldparser.OldLexerException;
 import org.icatproject.core.oldparser.OldParserException;
 import org.icatproject.core.oldparser.OldSearchQuery;
 import org.icatproject.core.oldparser.OldTokenizer;
-import org.icatproject.core.parser.Input;
-import org.icatproject.core.parser.LexerException;
 import org.icatproject.core.parser.ParserException;
 import org.icatproject.core.parser.RuleWhat;
-import org.icatproject.core.parser.Token;
-import org.icatproject.core.parser.Tokenizer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Comment("An authorization rule")
 @SuppressWarnings("serial")
@@ -41,26 +38,28 @@ import org.icatproject.core.parser.Tokenizer;
 		@NamedQuery(name = "Rule.CreateQuery", query = "SELECT DISTINCT r.crudJPQL FROM Rule r LEFT JOIN r.grouping g LEFT JOIN g.userGroups ug LEFT JOIN ug.user u WHERE (u.name = :member OR g IS NULL) AND r.bean = :bean AND r.c = TRUE"),
 		@NamedQuery(name = "Rule.ReadQuery", query = "SELECT DISTINCT r.crudJPQL FROM Rule r LEFT JOIN r.grouping g LEFT JOIN g.userGroups ug LEFT JOIN ug.user u WHERE (u.name = :member OR g IS NULL) AND r.bean = :bean AND r.r = TRUE"),
 		@NamedQuery(name = "Rule.IncludeQuery", query = "SELECT DISTINCT r.includeJPQL FROM Rule r LEFT JOIN r.grouping g LEFT JOIN g.userGroups ug LEFT JOIN ug.user u WHERE (u.name = :member OR g IS NULL) AND r.bean = :bean AND r.r = TRUE"),
-		@NamedQuery(name = "Rule.UpdateQuery", query = "SELECT DISTINCT r.crudJPQL FROM Rule r LEFT JOIN r.grouping g LEFT JOIN g.userGroups ug LEFT JOIN ug.user u WHERE (u.name = :member OR g IS NULL) AND r.bean = :bean AND r.u = TRUE"),
+		@NamedQuery(name = "Rule.UpdateQuery", query = "SELECT DISTINCT r.crudJPQL FROM Rule r LEFT JOIN r.grouping g LEFT JOIN g.userGroups ug LEFT JOIN ug.user u WHERE (u.name = :member OR g IS NULL) AND r.bean = :bean AND r.u = TRUE AND r.attribute is NULL"),
+		@NamedQuery(name = "Rule.UpdateAttributeQuery", query = "SELECT DISTINCT r.crudJPQL FROM Rule r LEFT JOIN r.grouping g LEFT JOIN g.userGroups ug LEFT JOIN ug.user u WHERE (u.name = :member OR g IS NULL) AND r.bean = :bean AND r.u = TRUE AND r.attribute = :attribute"),
 		@NamedQuery(name = "Rule.DeleteQuery", query = "SELECT DISTINCT r.crudJPQL FROM Rule r LEFT JOIN r.grouping g LEFT JOIN g.userGroups ug LEFT JOIN ug.user u WHERE (u.name = :member OR g IS NULL) AND r.bean = :bean AND r.d = TRUE"),
 		@NamedQuery(name = "Rule.SearchQuery", query = "SELECT DISTINCT r          FROM Rule r LEFT JOIN r.grouping g LEFT JOIN g.userGroups ug LEFT JOIN ug.user u WHERE (u.name = :member OR g IS NULL) AND r.bean = :bean AND r.r = TRUE"),
 		@NamedQuery(name = "Rule.PublicQuery", query = "SELECT DISTINCT r.bean     FROM Rule r LEFT JOIN r.grouping g WHERE r.restricted = FALSE AND g IS NULL") })
 public class Rule extends EntityBaseBean implements Serializable {
 
-	@EJB
-	@XmlTransient
-	@Transient
-	private GateKeeper gatekeeper;
-
-	private final static Logger logger = Logger.getLogger(Rule.class);
+	private final static Logger logger = LoggerFactory.getLogger(Rule.class);
 
 	public static final String CREATE_QUERY = "Rule.CreateQuery";
+
 	public static final String DELETE_QUERY = "Rule.DeleteQuery";
 	public static final String READ_QUERY = "Rule.ReadQuery";
 	public static final String INCLUDE_QUERY = "Rule.IncludeQuery";
 	public static final String SEARCH_QUERY = "Rule.SearchQuery";
 	public static final String UPDATE_QUERY = "Rule.UpdateQuery";
+	public static final String UPDATE_ATTRIBUTE_QUERY = "Rule.UpdateAttributeQuery";
 	public static final String PUBLIC_QUERY = "Rule.PublicQuery";
+	@EJB
+	@XmlTransient
+	@Transient
+	private GateKeeper gatekeeper;
 
 	@XmlTransient
 	private String bean;
@@ -79,10 +78,6 @@ public class Rule extends EntityBaseBean implements Serializable {
 	@XmlTransient
 	private boolean d;
 
-	@XmlTransient
-	@Column(length = 1024)
-	private String fromJPQL;
-
 	@ManyToOne(fetch = FetchType.LAZY)
 	private Grouping grouping;
 
@@ -95,20 +90,20 @@ public class Rule extends EntityBaseBean implements Serializable {
 	@XmlTransient
 	private boolean u;
 
-	@XmlTransient
-	private int varCount;
-
 	@Comment("To what the rules applies")
 	@Column(nullable = false, length = 1024)
 	private String what;
 
 	@XmlTransient
 	@Column(length = 1024)
-	private String whereJPQL;
+	private String searchJPQL;
 
 	@XmlTransient
 	@Column(length = 1024)
 	private String includeJPQL;
+
+	@XmlTransient
+	private String attribute;
 
 	// Needed for JPA
 	public Rule() {
@@ -117,25 +112,23 @@ public class Rule extends EntityBaseBean implements Serializable {
 	private void fixup(EntityManager manager, GateKeeper gateKeeper) throws IcatException {
 		this.crudFlags = this.crudFlags.toUpperCase().trim();
 		for (int i = 0; i < this.crudFlags.length(); i++) {
-			final char c = this.crudFlags.charAt(i);
-			if (c == 'C') {
-				this.c = true;
-			} else if (c == 'R') {
-				this.r = true;
-			} else if (c == 'U') {
-				this.u = true;
-			} else if (c == 'D') {
-				this.d = true;
+			final char ch = this.crudFlags.charAt(i);
+			if (ch == 'C') {
+				c = true;
+			} else if (ch == 'R') {
+				r = true;
+			} else if (ch == 'U') {
+				u = true;
+			} else if (ch == 'D') {
+				d = true;
 			} else {
 				throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER,
 						"CRUD value " + this.crudFlags + " contains " + c);
 			}
 		}
 
-		List<Token> tokens = null;
 		if (what == null) {
-			throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER,
-					"'what' must not be null");
+			throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER, "'what' must not be null");
 		}
 
 		String query = what;
@@ -143,15 +136,12 @@ public class Rule extends EntityBaseBean implements Serializable {
 
 			/* Parse the old style rule */
 			try {
-				OldSearchQuery oldSearchQuery = new OldSearchQuery(new OldInput(
-						OldTokenizer.getTokens(query)));
+				OldSearchQuery oldSearchQuery = new OldSearchQuery(new OldInput(OldTokenizer.getTokens(query)));
 				query = oldSearchQuery.getNewQuery();
 			} catch (OldLexerException e) {
-				throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER,
-						e.getMessage());
+				throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER, e.getMessage());
 			} catch (OldParserException e) {
-				throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER,
-						e.getMessage());
+				throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER, e.getMessage());
 			}
 			logger.debug("New style rule: " + query);
 		} else {
@@ -159,58 +149,33 @@ public class Rule extends EntityBaseBean implements Serializable {
 			gateKeeper.checkJPQL(query);
 		}
 
+		RuleWhat rw;
 		try {
-			tokens = Tokenizer.getTokens(query);
-		} catch (final LexerException e) {
-			throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER, e.getMessage());
-		}
-		final Input input = new Input(tokens);
-		RuleWhat r;
-		try {
-			r = new RuleWhat(input);
+			rw = new RuleWhat(query);
 		} catch (final ParserException e) {
 			throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER, e.getMessage());
 		}
 
-		/* Check that there are no expressions with more than one "." */
-		input.reset();
-		try {
-			Token token = input.consume();
-			while (token != null) {
-				if (token.getType() == Token.Type.NAME) {
-					String value = token.getValue();
-					int count = 0;
-					for (int i = 0; i < value.length(); i++) {
-						if (value.charAt(i) == '.') {
-							count++;
-						}
-					}
-					if (count > 1)
-						throw new IcatException(
-								IcatException.IcatExceptionType.BAD_PARAMETER,
-								"Expression "
-										+ value
-										+ " is not currently permitted in a rule. Use extra JOINs to get rid of "
-										+ (count - 1) + " '.' characters.");
-				}
-				token = input.consume();
-			}
-		} catch (ParserException e) {
-			/* Already parsed once so can't happen */
+		attribute = rw.getAttribute();
+		if (attribute != null && (r || c || d)) {
+			throw new IcatException(IcatException.IcatExceptionType.BAD_PARAMETER,
+					"Attribute selection in rules is only allowed for Update");
 		}
 
-		fromJPQL = r.getFrom();
-		whereJPQL = r.getWhere();
-		crudJPQL = "SELECT COUNT($0$) FROM " + r.getCrudFrom() + " WHERE $0$.id = :pkid"
-				+ (whereJPQL.isEmpty() ? "" : " AND (" + whereJPQL + ")");
-		includeJPQL = "SELECT $0$.id FROM " + r.getCrudFrom() + " WHERE $0$.id IN (:pkids)"
-				+ (whereJPQL.isEmpty() ? "" : " AND (" + whereJPQL + ")");
+		crudJPQL = "SELECT COUNT(" + rw.getIdPath() + ") FROM " + rw.getFrom() + " WHERE " + rw.getIdPath() + " = :pkid"
+				+ (rw.getWhere().isEmpty() ? "" : " AND (" + rw.getWhere() + ")");
+		includeJPQL = "SELECT " + rw.getIdPath() + " FROM " + rw.getFrom() + " WHERE " + rw.getIdPath() + " IN (:pkids)"
+				+ (rw.getWhere().isEmpty() ? "" : " AND (" + rw.getWhere() + ")");
+		searchJPQL = "SELECT " + rw.getIdPath() + " FROM " + rw.getFrom()
+				+ (rw.getWhere().isEmpty() ? "" : " WHERE " + rw.getWhere());
 
-		varCount = r.getVarCount();
+		bean = rw.getBean().getSimpleName();
 
-		bean = r.getBean().getSimpleName();
+		restricted = !rw.getWhere().isEmpty();
+	}
 
-		restricted = !r.getWhere().isEmpty();
+	public String getAttribute() {
+		return attribute;
 	}
 
 	@XmlTransient
@@ -222,32 +187,16 @@ public class Rule extends EntityBaseBean implements Serializable {
 		return crudFlags;
 	}
 
-	@XmlTransient
-	public String getCrudJPQL() {
-		return crudJPQL;
-	}
-
-	@XmlTransient
-	public String getFromJPQL() {
-		return fromJPQL;
-	}
-
 	public Grouping getGrouping() {
 		return grouping;
 	}
 
-	@XmlTransient
-	public int getVarCount() {
-		return varCount;
+	public String getSearchJPQL() {
+		return searchJPQL;
 	}
 
 	public String getWhat() {
 		return what;
-	}
-
-	@XmlTransient
-	public String getWhereJPQL() {
-		return whereJPQL;
 	}
 
 	@XmlTransient
@@ -286,12 +235,34 @@ public class Rule extends EntityBaseBean implements Serializable {
 		logger.debug("postMergeFixup of Rule for " + this.crudFlags + " of " + this.what);
 	}
 
+	@PostPersist()
+	void postPersist() {
+		try {
+			SingletonFinder.getGateKeeper().requestUpdatePublicTables();
+		} catch (Throwable e) {
+			logger.error(e.getClass() + " " + e.getMessage());
+		}
+	}
+
+	@PostRemove()
+	void postRemove() {
+		try {
+			SingletonFinder.getGateKeeper().requestUpdatePublicTables();
+		} catch (Throwable e) {
+			logger.error(e.getClass() + " " + e.getMessage());
+		}
+	}
+
 	@Override
-	public void preparePersist(String modId, EntityManager manager, GateKeeper gateKeeper,
-			boolean rootUser) throws IcatException {
-		super.preparePersist(modId, manager, gateKeeper, rootUser);
+	public void preparePersist(String modId, EntityManager manager, GateKeeper gateKeeper, PersistMode persistMode)
+			throws IcatException {
+		super.preparePersist(modId, manager, gateKeeper, persistMode);
 		this.fixup(manager, gateKeeper);
 		logger.debug("PreparePersist of Rule for " + this.crudFlags + " of " + this.what);
+	}
+
+	public void setAttribute(String attribute) {
+		this.attribute = attribute;
 	}
 
 	public void setBean(String bean) {
@@ -314,10 +285,6 @@ public class Rule extends EntityBaseBean implements Serializable {
 		this.d = d;
 	}
 
-	public void setFromJPQL(String fromJPQL) {
-		this.fromJPQL = fromJPQL;
-	}
-
 	public void setGrouping(Grouping grouping) {
 		this.grouping = grouping;
 	}
@@ -330,38 +297,16 @@ public class Rule extends EntityBaseBean implements Serializable {
 		this.restricted = restricted;
 	}
 
+	public void setSearchJPQL(String searchJPQL) {
+		this.searchJPQL = searchJPQL;
+	}
+
 	public void setU(boolean u) {
 		this.u = u;
 	}
 
-	public void setVarCount(int varCount) {
-		this.varCount = varCount;
-	}
-
 	public void setWhat(String what) {
 		this.what = what;
-	}
-
-	public void setWhereJPQL(String whereJPQL) {
-		this.whereJPQL = whereJPQL;
-	}
-
-	@PostRemove()
-	void postRemove() {
-		try {
-			SingletonFinder.getGateKeeper().requestUpdatePublicTables();
-		} catch (Throwable e) {
-			logger.error(e.getClass() + " " + e.getMessage());
-		}
-	}
-
-	@PostPersist()
-	void postPersist() {
-		try {
-			SingletonFinder.getGateKeeper().requestUpdatePublicTables();
-		} catch (Throwable e) {
-			logger.error(e.getClass() + " " + e.getMessage());
-		}
 	}
 
 }

@@ -2,6 +2,7 @@ package org.icatproject.core.entity;
 
 import java.io.Serializable;
 
+import javax.json.stream.JsonGenerator;
 import javax.persistence.Entity;
 import javax.persistence.EntityManager;
 import javax.persistence.JoinColumn;
@@ -10,11 +11,10 @@ import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 import javax.xml.bind.annotation.XmlRootElement;
 
-import org.apache.lucene.document.Document;
-import org.apache.lucene.document.StringField;
-import org.apache.lucene.document.Field.Store;
 import org.icatproject.core.IcatException;
+import org.icatproject.core.manager.EntityBeanManager.PersistMode;
 import org.icatproject.core.manager.GateKeeper;
+import org.icatproject.core.manager.LuceneApi;
 
 @Comment("A parameter associated with a data set")
 @SuppressWarnings("serial")
@@ -37,13 +37,11 @@ public class DatasetParameter extends Parameter implements Serializable {
 	}
 
 	@Override
-	public void preparePersist(String modId, EntityManager manager, GateKeeper gateKeeper,
-			boolean rootUser) throws IcatException {
-		super.preparePersist(modId, manager, gateKeeper, rootUser);
-		this.id = null;
+	public void preparePersist(String modId, EntityManager manager, GateKeeper gateKeeper, PersistMode persistMode)
+			throws IcatException {
+		super.preparePersist(modId, manager, gateKeeper, persistMode);
 		if (type == null) {
-			throw new IcatException(IcatException.IcatExceptionType.VALIDATION,
-					"Type of parameter is not set");
+			throw new IcatException(IcatException.IcatExceptionType.VALIDATION, "Type of parameter is not set");
 		}
 		if (!type.isApplicableToDataset()) {
 			throw new IcatException(IcatException.IcatExceptionType.VALIDATION,
@@ -56,9 +54,8 @@ public class DatasetParameter extends Parameter implements Serializable {
 	}
 
 	@Override
-	public Document getDoc() {
-		Document doc = super.getDoc();
-		doc.add(new StringField("dataset", "Dataset:" + dataset.id, Store.YES));
-		return doc;
+	public void getDoc(JsonGenerator gen) {
+		super.getDoc(gen);
+		LuceneApi.encodeSortedDocValuesField(gen, "dataset", dataset.id);
 	}
 }
