@@ -10,40 +10,39 @@ import java.lang.reflect.Method;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 
+import javax.json.stream.JsonGenerator;
 import javax.persistence.Column;
 import javax.persistence.EntityManager;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.MappedSuperclass;
-import javax.persistence.TableGenerator;
 import javax.persistence.Temporal;
 import javax.persistence.TemporalType;
 import javax.persistence.Transient;
 import javax.xml.bind.annotation.XmlTransient;
 
-import org.apache.log4j.Logger;
-import org.apache.lucene.document.Document;
 import org.icatproject.core.IcatException;
 import org.icatproject.core.IcatException.IcatExceptionType;
 import org.icatproject.core.manager.AccessType;
+import org.icatproject.core.manager.EntityBeanManager.PersistMode;
 import org.icatproject.core.manager.EntityInfoHandler;
 import org.icatproject.core.manager.EntityInfoHandler.Relationship;
 import org.icatproject.core.manager.GateKeeper;
-import org.icatproject.core.manager.Lucene;
+import org.icatproject.core.manager.LuceneManager;
 import org.icatproject.core.parser.IncludeClause.Step;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @SuppressWarnings("serial")
 @MappedSuperclass
-@TableGenerator(name = "SEQ_GEN", allocationSize = 500)
 public abstract class EntityBaseBean implements Serializable {
 
 	private static final EntityInfoHandler eiHandler = EntityInfoHandler.getInstance();
 
-	private static final Logger logger = Logger.getLogger(EntityBaseBean.class);
+	private static final Logger logger = LoggerFactory.getLogger(EntityBaseBean.class);
 
 	@Column(name = "CREATE_ID", nullable = false)
 	protected String createId;
@@ -58,7 +57,7 @@ public abstract class EntityBaseBean implements Serializable {
 	private long descendantCount = 1L;
 
 	@Id
-	@GeneratedValue(strategy = GenerationType.TABLE, generator = "SEQ_GEN")
+	@GeneratedValue(strategy = GenerationType.SEQUENCE)
 	protected Long id;
 
 	@Column(name = "MOD_ID", nullable = false)
@@ -69,7 +68,8 @@ public abstract class EntityBaseBean implements Serializable {
 	protected Date modTime;
 
 	/*
-	 * If this method is overridden it should be called as well by super.addToClone()
+	 * If this method is overridden it should be called as well by
+	 * super.addToClone()
 	 */
 	void addToClone(EntityBaseBean clone) {
 		clone.createId = createId;
@@ -79,7 +79,9 @@ public abstract class EntityBaseBean implements Serializable {
 		clone.modTime = modTime;
 	}
 
-	public void addToLucene(Lucene lucene) throws IcatException {
+	// This is only used by the older create and createMany calls and not by the
+	// new Restful write call
+	public void addToLucene(LuceneManager lucene) throws IcatException {
 		lucene.addDocument(this);
 		Class<? extends EntityBaseBean> klass = this.getClass();
 		Set<Relationship> rs = eiHandler.getRelatedEntities(klass);
@@ -105,10 +107,9 @@ public abstract class EntityBaseBean implements Serializable {
 	}
 
 	@SuppressWarnings("unchecked")
-	private List<EntityBaseBean> allowedMany(Step step, Map<Field, Method> getters,
-			GateKeeper gateKeeper, String userId, EntityManager manager)
-			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException,
-			IcatException {
+	private List<EntityBaseBean> allowedMany(Step step, Map<Field, Method> getters, GateKeeper gateKeeper,
+			String userId, EntityManager manager)
+			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IcatException {
 		Field field = step.getRelationship().getField();
 		List<EntityBaseBean> beans = (List<EntityBaseBean>) getters.get(field).invoke(this);
 		if (step.isAllowed()) {
@@ -118,10 +119,11 @@ public abstract class EntityBaseBean implements Serializable {
 		}
 	}
 
-	private EntityBaseBean allowedOne(Relationship r, Method method, GateKeeper gateKeeper,
-			String userId, EntityManager manager) throws IllegalAccessException,
-			IllegalArgumentException, InvocationTargetException, IcatException {
+	private EntityBaseBean allowedOne(Relationship r, Method method, GateKeeper gateKeeper, String userId,
+			EntityManager manager)
+			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException, IcatException {
 		EntityBaseBean bean = (EntityBaseBean) method.invoke(this);
+
 		if (bean != null && !gateKeeper.allowed(r)) {
 			try {
 				gateKeeper.performAuthorisation(userId, bean, AccessType.READ, manager);
@@ -137,9 +139,8 @@ public abstract class EntityBaseBean implements Serializable {
 		return bean;
 	}
 
-	public void collectIds(Map<String, Set<Long>> ids, boolean one, int hereVarNum,
-			List<Step> steps, GateKeeper gateKeeper, String userId, EntityManager manager)
-			throws IcatException {
+	public void collectIds(Map<String, Set<Long>> ids, boolean one, int hereVarNum, List<Step> steps,
+			GateKeeper gateKeeper, String userId, EntityManager manager) throws IcatException {
 
 		Class<? extends EntityBaseBean> klass = this.getClass();
 		String beanName = klass.getSimpleName();
@@ -150,8 +151,7 @@ public abstract class EntityBaseBean implements Serializable {
 			if (one) {
 				for (Relationship r : eiHandler.getOnes(klass)) {
 					Field att = r.getField();
-					EntityBaseBean value = allowedOne(r, getters.get(att), gateKeeper, userId,
-							manager);
+					EntityBaseBean value = allowedOne(r, getters.get(att), gateKeeper, userId, manager);
 					if (value != null) {
 						value.collectIds(ids, false, 0, null, gateKeeper, userId, manager);
 					}
@@ -162,20 +162,16 @@ public abstract class EntityBaseBean implements Serializable {
 						Relationship r = step.getRelationship();
 						Field field = r.getField();
 						if (r.isCollection()) {
-							List<EntityBaseBean> values = allowedMany(step, getters, gateKeeper,
-									userId, manager);
+							List<EntityBaseBean> values = allowedMany(step, getters, gateKeeper, userId, manager);
 
 							for (EntityBaseBean value : values) {
-								value.collectIds(ids, false, step.getThereVarNum(), steps,
-										gateKeeper, userId, manager);
+								value.collectIds(ids, false, step.getThereVarNum(), steps, gateKeeper, userId, manager);
 
 							}
 						} else {
-							EntityBaseBean value = allowedOne(r, getters.get(field), gateKeeper,
-									userId, manager);
+							EntityBaseBean value = allowedOne(r, getters.get(field), gateKeeper, userId, manager);
 							if (value != null) {
-								value.collectIds(ids, false, step.getThereVarNum(), steps,
-										gateKeeper, userId, manager);
+								value.collectIds(ids, false, step.getThereVarNum(), steps, gateKeeper, userId, manager);
 
 							}
 						}
@@ -210,8 +206,8 @@ public abstract class EntityBaseBean implements Serializable {
 
 	public long getDescendantCount(long maxEntities) throws IcatException {
 		if (descendantCount > maxEntities) {
-			throw new IcatException(IcatExceptionType.VALIDATION, "attempt to return more than "
-					+ maxEntities + " entitities");
+			throw new IcatException(IcatExceptionType.VALIDATION,
+					"attempt to return more than " + maxEntities + " entities");
 		}
 		return descendantCount;
 	}
@@ -238,96 +234,76 @@ public abstract class EntityBaseBean implements Serializable {
 		return this.modTime;
 	}
 
-	private void isValid() throws IcatException {
-
-		Class<? extends EntityBaseBean> klass = this.getClass();
-		logger.trace("Checking validity of " + klass.getSimpleName());
-		List<Field> notNullFields = eiHandler.getNotNullableFields(klass);
-		Map<Field, Method> getters = eiHandler.getGetters(klass);
-
-		for (Field field : notNullFields) {
-
-			Object value;
-			try {
-				Method method = getters.get(field);
-				logger.trace("Getter: " + method);
-				value = method.invoke(this, (Object[]) new Class[] {});
-			} catch (Exception e) {
-				throw new IcatException(IcatException.IcatExceptionType.INTERNAL, "" + e);
-			}
-
-			if (value == null) {
-				throw new IcatException(IcatException.IcatExceptionType.VALIDATION, this.getClass()
-						.getSimpleName() + ": " + field.getName() + " cannot be null.");
-			}
-		}
-
-		Map<Field, Integer> stringFields = eiHandler.getStringFields(klass);
-		for (Entry<Field, Integer> entry : stringFields.entrySet()) {
-			Field field = entry.getKey();
-			Integer length = entry.getValue();
-			Method method = getters.get(field);
-			Object value;
-			try {
-				value = method.invoke(this, (Object[]) new Class[] {});
-			} catch (Exception e) {
-				throw new IcatException(IcatException.IcatExceptionType.INTERNAL, "" + e);
-			}
-			if (value != null) {
-				if (((String) value).length() > length) {
-					throw new IcatException(IcatException.IcatExceptionType.VALIDATION, getClass()
-							.getSimpleName()
-							+ ": "
-							+ field.getName()
-							+ " cannot have length > "
-							+ length);
-				}
-			}
-		}
-
-	}
-
 	/*
-	 * If this method is overridden it should normally be called as well by super.isValid()
-	 */
-	public void isValid(EntityManager manager) throws IcatException {
-		isValid(manager, true);
-	}
-
-	public void isValid(EntityManager manager, boolean deepValidation) throws IcatException {
-		isValid();
-	}
-
-	/*
-	 * If this method is overridden it should normally be called as well by super.postMergeFixup()
+	 * If this method is overridden it should normally be called as well by
+	 * super.postMergeFixup()
 	 */
 	public void postMergeFixup(EntityManager manager, GateKeeper gateKeeper) throws IcatException {
 		// Do nothing by default
 	}
 
 	/*
-	 * If this method is overridden it should be called as well by super.preparePersist(). Note that
-	 * it recurses down though all to-many relationships.
+	 * If this method is overridden it should be called as well by
+	 * super.preparePersist(). Note that it recurses down through all to-many
+	 * relationships.
 	 */
-	public void preparePersist(String modId, EntityManager manager, GateKeeper gateKeeper,
-			boolean allAttributes) throws IcatException {
-		this.id = null;
-		if (!allAttributes || createId == null) {
+	public void preparePersist(String modId, EntityManager manager, GateKeeper gateKeeper, PersistMode persistMode)
+			throws IcatException {
+
+		logger.trace("preparePersist of " + this + " for state " + persistMode);
+
+		if (persistMode == PersistMode.CLONE) {
 			createId = modId;
-		}
-		if (!allAttributes || this.modId == null) {
 			this.modId = modId;
-		}
-		Date now = null;
-		if (!allAttributes || createTime == null) {
-			now = new Date();
+			Date now = new Date();
 			createTime = now;
-		}
-		if (!allAttributes || modTime == null) {
-			if (now == null) {
-				now = new Date();
-			}
 			modTime = now;
+		} else if (persistMode == PersistMode.IMPORTALL) {
+			this.id = null;
+			if (createId == null) {
+				createId = modId;
+			}
+			if (this.modId == null) {
+				this.modId = modId;
+			}
+			Date now = null;
+			if (createTime == null) {
+				now = new Date();
+				createTime = now;
+			}
+			if (modTime == null) {
+				if (now == null) {
+					now = new Date();
+				}
+				modTime = now;
+			}
+		} else if (persistMode == PersistMode.IMPORT_OR_WS) {
+			this.id = null;
+			createId = modId;
+			this.modId = modId;
+			Date now = new Date();
+			createTime = now;
+			modTime = now;
+		} else if (persistMode == PersistMode.REST) {
+			if (createId == null) {
+				createId = modId;
+			}
+			if (this.modId == null) {
+				this.modId = modId;
+			}
+			Date now = null;
+			if (createTime == null) {
+				now = new Date();
+				createTime = now;
+			}
+			if (modTime == null) {
+				if (now == null) {
+					now = new Date();
+				}
+				modTime = now;
+			}
+		} else {
+			throw new IcatException(IcatExceptionType.INTERNAL, "Unrecognised PersistMode");
 		}
 
 		Class<? extends EntityBaseBean> klass = this.getClass();
@@ -342,20 +318,19 @@ public abstract class EntityBaseBean implements Serializable {
 					if (!collection.isEmpty()) {
 						Method rev = r.getInverseSetter();
 						for (EntityBaseBean bean : collection) {
-							bean.preparePersist(modId, manager, gateKeeper, allAttributes);
+							bean.preparePersist(modId, manager, gateKeeper, persistMode);
 							rev.invoke(bean, this);
 						}
 					}
 				} catch (Exception e) {
-					throw new IcatException(IcatExceptionType.INTERNAL, e.getClass() + " "
-							+ e.getMessage());
+					throw new IcatException(IcatExceptionType.INTERNAL, e.getClass() + " " + e.getMessage());
 				}
 			}
 		}
 	}
 
-	public EntityBaseBean pruned(boolean one, int hereVarNum, List<Step> steps, long maxEntities,
-			GateKeeper gateKeeper, String userId, EntityManager manager) throws IcatException {
+	public EntityBaseBean pruned(boolean one, int hereVarNum, List<Step> steps, long maxEntities, GateKeeper gateKeeper,
+			String userId, EntityManager manager) throws IcatException {
 		Class<? extends EntityBaseBean> klass = this.getClass();
 		if (logger.isDebugEnabled()) {
 			if (one) {
@@ -386,11 +361,9 @@ public abstract class EntityBaseBean implements Serializable {
 			if (one) {
 				for (Relationship r : eiHandler.getOnes(klass)) {
 					Field att = r.getField();
-					EntityBaseBean value = allowedOne(r, getters.get(att), gateKeeper, userId,
-							manager);
+					EntityBaseBean value = allowedOne(r, getters.get(att), gateKeeper, userId, manager);
 					if (value != null) {
-						value = value.pruned(false, 0, null, maxEntities, gateKeeper, userId,
-								manager);
+						value = value.pruned(false, 0, null, maxEntities, gateKeeper, userId, manager);
 						setters.get(att).invoke(clone, value);
 						clone.descendantCount += value.getDescendantCount(maxEntities);
 					}
@@ -401,23 +374,20 @@ public abstract class EntityBaseBean implements Serializable {
 						Relationship r = step.getRelationship();
 						Field field = r.getField();
 						if (r.isCollection()) {
-							List<EntityBaseBean> values = allowedMany(step, getters, gateKeeper,
-									userId, manager);
+							List<EntityBaseBean> values = allowedMany(step, getters, gateKeeper, userId, manager);
 							@SuppressWarnings("unchecked")
-							List<EntityBaseBean> cloneList = (List<EntityBaseBean>) getters.get(
-									field).invoke(clone);
+							List<EntityBaseBean> cloneList = (List<EntityBaseBean>) getters.get(field).invoke(clone);
 							for (EntityBaseBean value : values) {
-								value = value.pruned(false, step.getThereVarNum(), steps,
-										maxEntities, gateKeeper, userId, manager);
+								value = value.pruned(false, step.getThereVarNum(), steps, maxEntities, gateKeeper,
+										userId, manager);
 								cloneList.add(value);
 								clone.descendantCount += value.getDescendantCount(maxEntities);
 							}
 						} else {
-							EntityBaseBean value = allowedOne(r, getters.get(field), gateKeeper,
-									userId, manager);
+							EntityBaseBean value = allowedOne(r, getters.get(field), gateKeeper, userId, manager);
 							if (value != null) {
-								value = value.pruned(false, step.getThereVarNum(), steps,
-										maxEntities, gateKeeper, userId, manager);
+								value = value.pruned(false, step.getThereVarNum(), steps, maxEntities, gateKeeper,
+										userId, manager);
 								setters.get(field).invoke(clone, value);
 								clone.descendantCount += value.getDescendantCount(maxEntities);
 							}
@@ -429,31 +399,6 @@ public abstract class EntityBaseBean implements Serializable {
 		} catch (Exception e) {
 			reportUnexpected(e);
 			throw new IcatException(IcatException.IcatExceptionType.INTERNAL, "" + e);
-		}
-
-	}
-
-	public void removeFromLucene(Lucene lucene) throws IcatException {
-		lucene.deleteDocument(this);
-		Class<? extends EntityBaseBean> klass = this.getClass();
-		Set<Relationship> rs = eiHandler.getRelatedEntities(klass);
-		Map<Field, Method> getters = eiHandler.getGetters(klass);
-		for (Relationship r : rs) {
-			if (r.isCollection()) {
-				Method m = getters.get(r.getField());
-				try {
-					@SuppressWarnings("unchecked")
-					List<EntityBaseBean> collection = (List<EntityBaseBean>) m.invoke(this);
-					if (!collection.isEmpty()) {
-						for (EntityBaseBean bean : collection) {
-							bean.removeFromLucene(lucene);
-						}
-					}
-				} catch (Exception e) {
-					throw new IcatException(IcatExceptionType.INTERNAL, e.getMessage());
-				}
-			}
-
 		}
 
 	}
@@ -484,38 +429,13 @@ public abstract class EntityBaseBean implements Serializable {
 		this.modTime = modTime;
 	}
 
-	public void updateInLucene(Lucene lucene) throws IcatException {
-		lucene.updateDocument(this);
-		Class<? extends EntityBaseBean> klass = this.getClass();
-		Set<Relationship> rs = eiHandler.getRelatedEntities(klass);
-		Map<Field, Method> getters = eiHandler.getGetters(klass);
-		for (Relationship r : rs) {
-			if (r.isCollection()) {
-				Method m = getters.get(r.getField());
-				try {
-					@SuppressWarnings("unchecked")
-					List<EntityBaseBean> collection = (List<EntityBaseBean>) m.invoke(this);
-					if (!collection.isEmpty()) {
-						for (EntityBaseBean bean : collection) {
-							bean.updateInLucene(lucene);
-						}
-					}
-				} catch (Exception e) {
-					throw new IcatException(IcatExceptionType.INTERNAL, e.getMessage());
-				}
-			}
-
-		}
-
-	}
-
 	@Override
 	public String toString() {
 		return this.getClass().getSimpleName() + ":" + id;
 	}
 
 	/* This should be overridden by classes wishing to index things in lucene */
-	public Document getDoc() {
-		return null;
+	public void getDoc(JsonGenerator gen) {
 	}
+
 }

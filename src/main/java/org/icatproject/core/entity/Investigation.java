@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
+import javax.json.stream.JsonGenerator;
 import javax.persistence.CascadeType;
 import javax.persistence.Column;
 import javax.persistence.Entity;
@@ -17,12 +18,7 @@ import javax.persistence.Temporal;
 import javax.persistence.TemporalType;
 import javax.persistence.UniqueConstraint;
 
-import org.apache.lucene.document.DateTools;
-import org.apache.lucene.document.DateTools.Resolution;
-import org.apache.lucene.document.Document;
-import org.apache.lucene.document.Field.Store;
-import org.apache.lucene.document.StringField;
-import org.apache.lucene.document.TextField;
+import org.icatproject.core.manager.LuceneApi;
 
 @Comment("An investigation or experiment")
 @SuppressWarnings("serial")
@@ -262,10 +258,8 @@ public class Investigation extends EntityBaseBean implements Serializable {
 	}
 
 	@Override
-	public Document getDoc() {
-		Document doc = new Document();
-		StringBuilder sb = new StringBuilder(visitId + " " + name + " " + facility.getName() + " "
-				+ type.getName());
+	public void getDoc(JsonGenerator gen) {
+		StringBuilder sb = new StringBuilder(visitId + " " + name + " " + facility.getName() + " " + type.getName());
 		if (summary != null) {
 			sb.append(" " + summary);
 		}
@@ -275,22 +269,22 @@ public class Investigation extends EntityBaseBean implements Serializable {
 		if (title != null) {
 			sb.append(" " + title);
 		}
-		doc.add(new TextField("text", sb.toString(), Store.NO));
-		if (startDate != null) {
-			doc.add(new StringField("startDate", DateTools.dateToString(startDate, Resolution.MINUTE),
-					Store.NO));
-		} else {
-			doc.add(new StringField("startDate",
-					DateTools.dateToString(modTime, Resolution.MINUTE), Store.NO));
-		}
-		if (endDate != null) {
-			doc.add(new StringField("endDate", DateTools.dateToString(endDate, Resolution.MINUTE),
-					Store.NO));
-		} else {
-			doc.add(new StringField("endDate",
-					DateTools.dateToString(modTime, Resolution.MINUTE), Store.NO));
-		}
-		return doc;
-	}
+		LuceneApi.encodeTextfield(gen, "text", sb.toString());
 
+		if (startDate != null) {
+			LuceneApi.encodeStringField(gen, "startDate", startDate);
+		} else {
+			LuceneApi.encodeStringField(gen, "startDate", createTime);
+		}
+
+		if (endDate != null) {
+			LuceneApi.encodeStringField(gen, "endDate", endDate);
+		} else {
+			LuceneApi.encodeStringField(gen, "endDate", modTime);
+		}
+
+		LuceneApi.encodeSortedDocValuesField(gen, "id", id);
+
+		LuceneApi.encodeStoredId(gen, id);
+	}
 }

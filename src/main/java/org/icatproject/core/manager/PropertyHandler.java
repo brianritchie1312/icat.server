@@ -1,84 +1,267 @@
 package org.icatproject.core.manager;
 
-import java.io.File;
-import java.io.FileInputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.InetAddress;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.net.UnknownHostException;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.annotation.PostConstruct;
-import javax.ejb.DependsOn;
 import javax.ejb.Singleton;
-import javax.naming.Context;
+import javax.json.Json;
+import javax.json.JsonObject;
+import javax.json.JsonReader;
+import javax.json.stream.JsonGenerator;
+import javax.json.stream.JsonParser;
+import javax.json.stream.JsonParser.Event;
+import javax.json.stream.JsonParsingException;
 import javax.naming.InitialContext;
 
-import org.apache.log4j.Logger;
+import org.apache.http.HttpEntity;
+import org.apache.http.HttpResponse;
+import org.apache.http.NameValuePair;
+import org.apache.http.ParseException;
+import org.apache.http.StatusLine;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.utils.URIBuilder;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.message.BasicNameValuePair;
+import org.apache.http.util.EntityUtils;
+import org.icatproject.authentication.Authentication;
 import org.icatproject.authentication.Authenticator;
 import org.icatproject.core.IcatException;
+import org.icatproject.core.IcatException.IcatExceptionType;
+import org.icatproject.utils.CheckedProperties;
+import org.icatproject.utils.CheckedProperties.CheckedPropertyException;
+import org.icatproject.utils.ContainerGetter;
+import org.icatproject.utils.ContainerGetter.ContainerType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.Marker;
+import org.slf4j.MarkerFactory;
 
-@DependsOn("LoggingConfigurator")
 @Singleton
 public class PropertyHandler {
 
-	public class HostPort {
+	public class RestAuthenticator implements Authenticator {
 
-		private String host;
-		private Integer port;
+		private String mnemonic;
+		private List<String> urls;
 
-		public HostPort(Properties props, String key) {
-			String hostPortString = props.getProperty(key);
-			if (hostPortString != null) {
-				String[] bits = hostPortString.split(":");
-				host = bits[0];
+		public RestAuthenticator(String mnemonic, String urls) throws IcatException {
+			this.mnemonic = mnemonic;
+			this.urls = Arrays.asList(urls.split("\\s+"));
+			String desc = null;
+			for (String url : this.urls) {
 				try {
-					port = Integer.parseInt(bits[1]);
-				} catch (NumberFormatException e) {
-					abend(e.getClass() + e.getMessage());
-				}
-				try {
-					String hostName = InetAddress.getLocalHost().getHostName();
-					if (hostName.equalsIgnoreCase(bits[0])) {
-						host = null;
-						port = null;
-						logger.debug(key + " is local machine so is ignored");
+					URI uri = new URIBuilder(url).setPath("/authn." + mnemonic + "/" + "description").build();
+
+					logger.trace("Calling " + uri);
+					try (CloseableHttpClient httpclient = HttpClients.createDefault()) {
+						HttpGet httpGet = new HttpGet(uri);
+						try (CloseableHttpResponse response = httpclient.execute(httpGet)) {
+							String resp = getString(response);
+							if (desc == null) {
+								desc = resp;
+							} else if (!desc.equals(resp)) {
+								throw new IcatException(IcatExceptionType.INTERNAL,
+										"authenticators have mismatched descriptions");
+							}
+						}
 					}
-				} catch (UnknownHostException e) {
-					abend(e.getClass() + e.getMessage());
+				} catch (URISyntaxException | IOException | IcatException e) {
+					logger.error(e.getClass() + " " + e.getMessage());
 				}
-				formattedProps.add(key + " " + hostPortString);
+			}
+			if (desc == null) {
+				throw new IcatException(IcatExceptionType.INTERNAL,
+						"No authenticator of type " + mnemonic + " is working");
+			}
+		}
+
+		@Override
+		public Authentication authenticate(Map<String, String> credentials, String ip) throws IcatException {
+			ByteArrayOutputStream baos = new ByteArrayOutputStream();
+			try (JsonGenerator gen = Json.createGenerator(baos)) {
+				gen.writeStartObject();
+				gen.writeStartArray("credentials");
+				for (Entry<String, String> entry : credentials.entrySet()) {
+					gen.writeStartObject().write(entry.getKey(), entry.getValue()).writeEnd();
+				}
+				gen.writeEnd();
+				gen.write("ip", ip);
+				gen.writeEnd().close();
+			}
+			for (String url : this.urls) {
+				try {
+					URI uri = new URIBuilder(url).setPath("/authn." + mnemonic + "/" + "authenticate").build();
+
+					List<NameValuePair> formparams = new ArrayList<>();
+					formparams.add(new BasicNameValuePair("json", baos.toString()));
+					try (CloseableHttpClient httpclient = HttpClients.createDefault()) {
+						HttpPost httpPost = new HttpPost(uri);
+						httpPost.setEntity(new UrlEncodedFormEntity(formparams));
+						try (CloseableHttpResponse response = httpclient.execute(httpPost)) {
+							Rest.checkStatus(response, IcatExceptionType.SESSION);
+							try (JsonReader r = Json
+									.createReader(new ByteArrayInputStream(getString(response).getBytes()))) {
+								JsonObject o = r.readObject();
+								String username = o.getString("username");
+								String mechanism = null;
+								if (o.containsKey("mechanism")) {
+									mechanism = o.getString("mechanism");
+								}
+								return new Authentication(username, mechanism);
+							}
+						}
+					}
+				} catch (URISyntaxException | IOException e) {
+					logger.error("Authenticator of type", mnemonic, "reports", e.getClass().getName(), e.getMessage());
+				}
+			}
+			throw new IcatException(IcatExceptionType.INTERNAL, "No authenticator of type " + mnemonic + " is working");
+		}
+
+		@Override
+		public String getDescription() throws IcatException {
+			for (String url : this.urls) {
+				try {
+					URI uri = new URIBuilder(url).setPath("/authn." + mnemonic + "/" + "description").build();
+					try (CloseableHttpClient httpclient = HttpClients.createDefault()) {
+						HttpGet httpGet = new HttpGet(uri);
+						try (CloseableHttpResponse response = httpclient.execute(httpGet)) {
+							return getString(response);
+						}
+					}
+				} catch (URISyntaxException | IOException | IcatException e) {
+					logger.error(e.getClass() + " " + e.getMessage());
+				}
+			}
+			throw new IcatException(IcatExceptionType.INTERNAL, "No authenticator of type " + mnemonic + " is working");
+		}
+
+		private String getString(CloseableHttpResponse response) throws IcatException {
+			checkStatus(response);
+			HttpEntity entity = response.getEntity();
+			if (entity == null) {
+				throw new IcatException(IcatExceptionType.INTERNAL, "No http entity returned in response");
+			}
+			try {
+				return EntityUtils.toString(entity);
+			} catch (ParseException | IOException e) {
+				throw new IcatException(IcatExceptionType.INTERNAL, e.getClass() + " " + e.getMessage());
+			}
+		}
+
+		private void checkStatus(HttpResponse response) throws IcatException {
+			StatusLine status = response.getStatusLine();
+			if (status == null) {
+				throw new IcatException(IcatExceptionType.INTERNAL, "Status line returned is empty");
+			}
+			int rc = status.getStatusCode();
+			if (rc / 100 != 2) {
+				HttpEntity entity = response.getEntity();
+				String error;
+				if (entity == null) {
+					throw new IcatException(IcatExceptionType.INTERNAL, "No explanation provided");
+				} else {
+					try {
+						error = EntityUtils.toString(entity);
+					} catch (ParseException | IOException e) {
+						throw new IcatException(IcatExceptionType.INTERNAL, e.getClass() + " " + e.getMessage());
+					}
+				}
+				try (JsonParser parser = Json.createParser(new ByteArrayInputStream(error.getBytes()))) {
+					String code = null;
+					String message = null;
+					String key = "";
+					while (parser.hasNext()) {
+						JsonParser.Event event = parser.next();
+						if (event == Event.KEY_NAME) {
+							key = parser.getString();
+						} else if (event == Event.VALUE_STRING) {
+							if (key.equals("code")) {
+								code = parser.getString();
+							} else if (key.equals("message")) {
+								message = parser.getString();
+							}
+						}
+					}
+
+					if (code == null || message == null) {
+						throw new IcatException(IcatExceptionType.INTERNAL, error);
+					}
+					throw new IcatException(IcatExceptionType.INTERNAL, message);
+				} catch (JsonParsingException e) {
+					throw new IcatException(IcatExceptionType.INTERNAL, error);
+				}
 			}
 
 		}
 
-		public String getHost() {
-			return host;
+	}
+
+	public enum CallType {
+		READ, WRITE, SESSION, INFO
+	}
+
+	public class ExtendedAuthenticator {
+
+		private Authenticator authenticator;
+		private String friendly;
+		private boolean admin;
+
+		public ExtendedAuthenticator(Authenticator authenticator, String friendly, boolean admin) {
+			this.authenticator = authenticator;
+			this.friendly = friendly;
+			this.admin = admin;
 		}
 
-		public Integer getPort() {
-			return port;
+		public Authenticator getAuthenticator() {
+			return authenticator;
+		}
+
+		public String getFriendly() {
+			return friendly;
+		}
+
+		public boolean isAdmin() {
+			return admin;
 		}
 
 	}
 
 	public enum Operation {
-		C, U, D
+		C, U
 	}
 
-	private final static Logger logger = Logger.getLogger(PropertyHandler.class);;
-	private final static Pattern cudPattern = Pattern.compile("[CUD]*");
-	private final static Pattern srwPattern = Pattern.compile("[SRW]*");
+	private final static Logger logger = LoggerFactory.getLogger(PropertyHandler.class);
+	private final static Marker fatal = MarkerFactory.getMarker("FATAL");
+	private final static Pattern cuPattern = Pattern.compile("[CU]*");
 
-	private Map<String, Authenticator> authPlugins = new HashMap<String, Authenticator>();
+	private Map<String, ExtendedAuthenticator> authPlugins = new LinkedHashMap<>();
 
-	public Map<String, Authenticator> getAuthPlugins() {
+	public Map<String, ExtendedAuthenticator> getAuthPlugins() {
 		return authPlugins;
 	}
 
@@ -90,288 +273,294 @@ public class PropertyHandler {
 		return rootUserNames;
 	}
 
+	
+	/**
+	 * Configure which entities will be indexed by lucene on ingest
+	 */
+	private Set<String> entitiesToIndex = new HashSet<String>();
+	
+	public Set<String> getEntitiesToIndex() {
+		return entitiesToIndex;
+	}
+	
 	public int getLifetimeMinutes() {
 		return lifetimeMinutes;
 	}
 
 	private int lifetimeMinutes;
 
-	private Set<String> logRequests = new HashSet<String>();
-	private String luceneDirectory;
-	private int luceneCommitSeconds;
+	private Set<CallType> logSet = new HashSet<>();
 
 	private List<String> formattedProps = new ArrayList<String>();
-	private int luceneCommitCount;
 
-	private String luceneHost;
-	private Integer lucenePort;
 	private int maxEntities;
 	private int maxIdsInQuery;
 	private long importCacheSize;
 	private long exportCacheSize;
+	private ContainerType containerType;
+	private String jmsTopicConnectionFactory;
+	private String digestKey;
+	private URL luceneUrl;
+	private int lucenePopulateBlockSize;
+	private Path luceneDirectory;
+	private long luceneBacklogHandlerIntervalMillis;
+	private Map<String, String> cluster = new HashMap<>();
+	private long luceneEnqueuedRequestIntervalMillis;
 
 	@PostConstruct
 	private void init() {
-		File f = new File("icat.properties");
-		Properties props = new Properties();
+		CheckedProperties props = new CheckedProperties();
 		try {
-			props.load(new FileInputStream(f));
-			logger.info("Property file " + f + " loaded");
-		} catch (Exception e) {
-			String msg = "Problem with " + f.getAbsolutePath() + "  " + e.getMessage();
-			logger.fatal(msg);
-			throw new IllegalStateException(msg);
-		}
+			props.loadFromResource("run.properties");
+			logger.info("Property file run.properties loaded");
+			String key;
 
-		/* log4j.properties */
-		String path = props.getProperty("log4j.properties");
-		if (path != null) {
-			formattedProps.add("log4j.properties " + path);
-		}
+			/* The authn.list */
+			String authnList = props.getString("authn.list");
+			formattedProps.add("authn.list " + authnList);
 
-		/* The authn.list */
-		String authnList = props.getProperty("authn.list").trim();
-		if (authnList == null || authnList.isEmpty()) {
-			String msg = "Property 'authn.list' must be set and must contains something";
-			logger.fatal(msg);
-			throw new IllegalStateException(msg);
-		}
-		formattedProps.add("authn.list " + authnList);
-
-		for (String mnemonic : authnList.split("\\s+")) {
-			String key = "authn." + mnemonic + ".jndi";
-			String jndi = props.getProperty(key).trim();
-			if (jndi == null) {
-				String msg = "Property '" + key + "' is not set";
-				logger.fatal(msg);
-				throw new IllegalStateException(msg);
-			}
-			HostPort hostPort = new HostPort(props, "authn." + mnemonic + ".hostPort");
-			String host = hostPort.getHost();
-			Integer port = hostPort.getPort();
-			try {
-				Context ctx = new InitialContext();
-				if (host != null) {
-					ctx.addToEnvironment("org.omg.CORBA.ORBInitialHost", host);
-					ctx.addToEnvironment("org.omg.CORBA.ORBInitialPort", Integer.toString(port));
-					logger.debug("Requesting remote authenticator at " + host + ":" + port);
+			for (String mnemonic : authnList.split("\\s+")) {
+				Authenticator authen = null;
+				String keyJndi = "authn." + mnemonic + ".jndi";
+				String keyUrl = "authn." + mnemonic + ".url";
+				if (props.has(keyJndi) && props.has(keyUrl)) {
+					abend("Both " + keyJndi + " and " + keyUrl + " have been specified in run.properties");
 				}
-				Authenticator authenticator = (Authenticator) ctx.lookup(jndi);
-				logger.debug("Found Authenticator: " + mnemonic + " with jndi " + jndi);
+				if (props.has(keyJndi)) {
+					String jndi = props.getString(keyJndi);
+					formattedProps.add(keyJndi + " " + jndi);
+					String hpKey = "authn." + mnemonic + ".hostPort";
+					if (props.has(hpKey)) {
+						abend("Key  '" + hpKey + " specified in run.properties is no longer permitted");
+					}
+					try {
+						authen = (Authenticator) new InitialContext().lookup(jndi);
+					} catch (Throwable e) {
+						abend(e.getClass() + " reports " + e.getMessage());
+					}
+					logger.debug("Found Authenticator: " + mnemonic + " with jndi " + jndi);
+				} else {
+					String urls = props.getString(keyUrl);
+					try {
+						authen = new RestAuthenticator(mnemonic, urls);
+					} catch (IcatException e) {
+						abend(e.getClass() + " " + e.getMessage());
+					}
+					formattedProps.add(keyUrl + " = " + urls);
+				}
+
+				key = "authn." + mnemonic + ".friendly";
+				String friendly = null;
+				if (props.has(key)) {
+					friendly = props.getString(key);
+					formattedProps.add(key + " " + friendly);
+				}
+
+				key = "authn." + mnemonic + ".admin";
+				boolean admin = props.getBoolean(key, false);
+				if (props.has(key)) {
+					formattedProps.add(key + " " + admin);
+				}
+
+				ExtendedAuthenticator authenticator = new ExtendedAuthenticator(authen, friendly, admin);
 				authPlugins.put(mnemonic, authenticator);
-			} catch (Throwable e) {
-				String msg = e.getClass() + " reports " + e.getMessage();
-				logger.fatal(msg);
-				throw new IllegalStateException(msg);
+
 			}
-		}
 
-		/* lifetimeMinutes */
-		String ltm = props.getProperty("lifetimeMinutes");
-		if (ltm == null) {
-			String msg = "lifetimeMinutes is not set";
-			logger.fatal(msg);
-			throw new IllegalStateException(msg);
-		}
+			/* lifetimeMinutes */
+			lifetimeMinutes = props.getPositiveInt("lifetimeMinutes");
+			formattedProps.add("lifetimeMinutes " + lifetimeMinutes);
 
-		try {
-			lifetimeMinutes = Integer.parseInt(ltm);
-		} catch (NumberFormatException e) {
-			String msg = "lifetimeMinutes '" + ltm + "' does not represent an integer";
-			logger.fatal(msg);
-			throw new IllegalStateException(msg);
-		}
-		formattedProps.add("lifetimeMinutes " + lifetimeMinutes);
+			/* rootUserNames */
+			String names = props.getString("rootUserNames");
+			for (String name : names.split("\\s+")) {
+				rootUserNames.add(name);
+			}
+			formattedProps.add("rootUserNames " + names);
 
-		/* rootUserNames */
-		String names = props.getProperty("rootUserNames");
-		if (names == null) {
-			String msg = "rootUserNames is not set";
-			logger.fatal(msg);
-			throw new IllegalStateException(msg);
-		}
-		for (String name : names.trim().split("\\s+")) {
-			rootUserNames.add(name);
-		}
-		formattedProps.add("rootUserNames " + names);
-
-		/* notification.list */
-		String notificationList = props.getProperty("notification.list");
-		if (notificationList == null) {
-			String msg = "Property 'notification.list' must be set but may be empty";
-			logger.fatal(msg);
-			throw new IllegalStateException(msg);
-		}
-		formattedProps.add("notification.list " + notificationList);
-
-		notificationList = notificationList.trim();
-		if (!notificationList.isEmpty()) {
-			EntityInfoHandler ei = EntityInfoHandler.getInstance();
-			for (String entity : notificationList.split("\\s+")) {
-				try {
-					ei.getEntityInfo(entity);
-				} catch (IcatException e) {
-					String msg = "Value '" + entity
-							+ "' specified in 'notification.list' is not an ICAT entity";
-					logger.fatal(msg);
-					throw new IllegalStateException(msg);
+			/* entitiesToIndex */
+			key = "lucene.entitiesToIndex";
+			if (props.has(key)) {
+				String indexableEntities = props.getString(key);
+				for (String indexableEntity : indexableEntities.split("\\s+")) {
+					entitiesToIndex.add(indexableEntity);
 				}
-				String propertyName = "notification." + entity;
-				String notificationOps = props.getProperty(propertyName);
-				if (notificationOps == null) {
-					String msg = "Property '" + propertyName + "' must be set but may be empty";
-					logger.fatal(msg);
-					throw new IllegalStateException(msg);
-				}
-				notificationOps = notificationOps.trim();
-				formattedProps.add(propertyName + " " + notificationOps);
-				if (!notificationOps.isEmpty()) {
-					Matcher m = cudPattern.matcher(notificationOps);
-					if (!m.matches()) {
-						String msg = "Property  '" + propertyName
-								+ "' must only contain the letters C, U and D";
-						logger.fatal(msg);
+				logger.info("lucene.entitiesToIndex: {}", entitiesToIndex.toString());
+			} else {
+				/* If the property is not specified, we default to all the entities which
+				 * currently override the EntityBaseBean.getDoc() method. This should
+				 * result in no change to behaviour if the property is not specified.
+				 */
+				entitiesToIndex.addAll(Arrays.asList("Datafile", "Dataset", "Investigation", "InvestigationUser", 
+						"DatafileParameter", "DatasetParameter", "InvestigationParameter", "Sample"));
+				logger.info("lucene.entitiesToIndex not set. Defaulting to: {}", entitiesToIndex.toString());
+			}
+			formattedProps.add("lucene.entitiesToIndex " + entitiesToIndex.toString());
+			
+			/* notification.list */
+			key = "notification.list";
+			if (props.has(key)) {
+				String notificationList = props.getString(key);
+				formattedProps.add(key + " " + notificationList);
+
+				EntityInfoHandler ei = EntityInfoHandler.getInstance();
+				for (String entity : notificationList.split("\\s+")) {
+					try {
+						ei.getEntityInfo(entity);
+					} catch (IcatException e) {
+						String msg = "Value '" + entity + "' specified in 'notification.list' is not an ICAT entity";
+						logger.error(fatal, msg);
 						throw new IllegalStateException(msg);
 					}
-					for (String c : new String[] { "C", "U", "D" }) {
+					key = "notification." + entity;
+					String notificationOps = props.getString(key);
+
+					formattedProps.add(key + " " + notificationOps);
+
+					Matcher m = cuPattern.matcher(notificationOps);
+					if (!m.matches()) {
+						String msg = "Property  '" + key + "' must only contain the letters C and U";
+						logger.error(fatal, msg);
+						throw new IllegalStateException(msg);
+					}
+					for (String c : new String[] { "C", "U" }) {
 						if (notificationOps.indexOf(c) >= 0) {
-							notificationRequests.put(entity + ":" + c, new NotificationRequest(
-									Operation.valueOf(Operation.class, c), entity));
+							notificationRequests.put(entity + ":" + c,
+									new NotificationRequest(Operation.valueOf(Operation.class, c), entity));
 						}
 					}
 				}
+				logger.info("notification.list: {}", notificationList);
+			} else {
+				logger.info("'notification.list' entry not present so no notifications will be sent");
 			}
-		}
 
-		/* log.list */
-		String callLogs = props.getProperty("log.list");
-		if (callLogs == null) {
-			abend("Property 'log.list' must be set but may be empty");
-		}
-		callLogs = callLogs.trim();
-		formattedProps.add("log.list " + callLogs);
-		if (!callLogs.isEmpty()) {
-			for (String logDest : callLogs.split("\\s+")) {
-				if (logDest.equals("file") || logDest.equals("table")) {
-					String propertyName = "log." + logDest;
-					String logOps = props.getProperty(propertyName);
-
-					if (logOps == null) {
-						abend("Property '" + propertyName + "' must be set but may be empty");
+			/* Call logging categories */
+			key = "log.list";
+			if (props.has(key)) {
+				String callLogs = props.getString(key);
+				formattedProps.add(key + " " + callLogs);
+				for (String callTypeString : callLogs.split("\\s+")) {
+					try {
+						logSet.add(CallType.valueOf(callTypeString.toUpperCase()));
+					} catch (IllegalArgumentException e) {
+						String msg = "Value " + callTypeString + " in log.list must be chosen from "
+								+ Arrays.asList(CallType.values());
+						logger.error(fatal, msg);
+						throw new IllegalStateException(msg);
 					}
-					logOps = logOps.trim();
-					formattedProps.add(propertyName + " " + logOps);
-					if (!logOps.isEmpty()) {
-						Matcher m = srwPattern.matcher(logOps);
-						if (!m.matches()) {
-							abend("Property  '" + propertyName
-									+ "' must only contain the letters S, R and W");
-						}
-						for (String c : new String[] { "S", "R", "W" }) {
-							if (logOps.indexOf(c) >= 0) {
-								logRequests.add(logDest + ":" + c);
-								logger.debug("Log request added " + logDest + ":" + c);
-							}
-						}
+				}
+				logger.info("log.list: {}", logSet);
+			} else {
+				logger.info("'log.list' entry not present so no JMS call logging will be performed");
+			}
+
+			/* Lucene Host */
+			if (props.has("lucene.url")) {
+				luceneUrl = props.getURL("lucene.url");
+				formattedProps.add("lucene.url" + " " + luceneUrl);
+
+				lucenePopulateBlockSize = props.getPositiveInt("lucene.populateBlockSize");
+				formattedProps.add("lucene.populateBlockSize" + " " + lucenePopulateBlockSize);
+
+				luceneDirectory = props.getPath("lucene.directory");
+				if (!luceneDirectory.toFile().isDirectory()) {
+					String msg = luceneDirectory + " is not a directory";
+					logger.error(fatal, msg);
+					throw new IllegalStateException(msg);
+				}
+				formattedProps.add("lucene.directory" + " " + luceneDirectory);
+
+				luceneBacklogHandlerIntervalMillis = props.getPositiveLong("lucene.backlogHandlerIntervalSeconds");
+				formattedProps.add("lucene.backlogHandlerIntervalSeconds" + " " + luceneBacklogHandlerIntervalMillis);
+				luceneBacklogHandlerIntervalMillis *= 1000;
+
+				luceneEnqueuedRequestIntervalMillis = props.getPositiveLong("lucene.enqueuedRequestIntervalSeconds");
+				formattedProps.add("lucene.enqueuedRequestIntervalSeconds" + " " + luceneEnqueuedRequestIntervalMillis);
+				luceneEnqueuedRequestIntervalMillis *= 1000;
+			}
+
+			/*
+			 * maxEntities, importCacheSize, exportCacheSize, maxIdsInQuery, key
+			 */
+			maxEntities = props.getPositiveInt("maxEntities");
+			formattedProps.add("maxEntities " + maxEntities);
+
+			importCacheSize = props.getPositiveLong("importCacheSize");
+			formattedProps.add("importCacheSize " + importCacheSize);
+
+			exportCacheSize = props.getPositiveLong("exportCacheSize");
+			formattedProps.add("exportCacheSize " + exportCacheSize);
+
+			maxIdsInQuery = props.getPositiveInt("maxIdsInQuery");
+			formattedProps.add("maxIdsInQuery " + maxIdsInQuery);
+
+			if (props.has("key")) {
+				digestKey = props.getString("key");
+				formattedProps.add("key " + digestKey);
+				logger.info("Key is " + (digestKey == null ? "not set" : "set"));
+			}
+
+			key = "cluster";
+			if (props.has(key)) {
+				String clusterString = props.getString(key);
+				formattedProps.add(key + " " + clusterString);
+				cluster = new HashMap<>();
+				for (String urlString : clusterString.split("\\s+")) {
+					URL url = null;
+					try {
+						url = new URL(urlString);
+					} catch (MalformedURLException e) {
+						abend("Url in cluster " + urlString + " is not a valid URL");
 					}
-				} else {
-					abend("Value '" + logDest
-							+ "' specified in 'log.list' is neither 'file' nor 'tables'");
+					String host = url.getHost();
+					InetAddress address = null;
+					try {
+						address = InetAddress.getByName(host);
+					} catch (UnknownHostException e) {
+						abend("Host " + host + " in cluster specification is not known");
+					}
+					String hostAddress = address.getHostAddress();
+					try {
+						if (hostAddress.equals(InetAddress.getLocalHost().getHostAddress())) {
+							continue;
+						}
+					} catch (UnknownHostException e) {
+						// Ignore
+					}
+
+					if (Arrays.asList("localhost.localdomain", "localhost", "127.0.0.1").contains(host)) {
+						continue;
+					}
+
+					cluster.put(address.getHostAddress(), url.toExternalForm());
+					logger.info("Cluster includes " + url.toExternalForm() + " " + hostAddress);
 				}
 			}
-		}
-		logger.debug("There are " + logRequests.size() + " log requests");
 
-		/* Lucene Host */
-		HostPort hostPort = new HostPort(props, "lucene.hostPort");
-		luceneHost = hostPort.getHost();
-		lucenePort = hostPort.getPort();
+			/* JMS stuff */
+			jmsTopicConnectionFactory = props.getString("jms.topicConnectionFactory",
+					"java:comp/DefaultJMSConnectionFactory");
+			formattedProps.add("jms.topicConnectionFactory " + jmsTopicConnectionFactory);
 
-		/* Lucene Directory */
-		luceneDirectory = props.getProperty("lucene.directory");
-		if (luceneDirectory != null) {
-			formattedProps.add("lucene.directory " + luceneDirectory);
-
-			String luceneCommitSecondsString = props.getProperty("lucene.commitSeconds");
-			if (luceneCommitSecondsString == null) {
-				abend("Value of 'lucene.commitSeconds' may not be null when the lucene.directory is set");
+			/* find type of container and set flags */
+			containerType = ContainerGetter.getContainer();
+			logger.info("ICAT has been deployed in a " + containerType + " container");
+			if (containerType == ContainerType.UNKNOWN) {
+				abend("Container type " + containerType + " is not recognised");
 			}
-			try {
-				luceneCommitSeconds = Integer.parseInt(luceneCommitSecondsString);
-				formattedProps.add("lucene.commitSeconds " + luceneCommitSeconds);
-				if (luceneCommitSeconds <= 0) {
-					abend("Value of 'lucene.commitSeconds'" + luceneCommitSecondsString
-							+ "' is not an integer greater than 0");
-				}
-			} catch (NumberFormatException e) {
-				abend("Value of 'lucene.commitSeconds'" + luceneCommitSecondsString
-						+ "' is not an integer greater than 0");
-			}
-
-			String luceneCommitCountString = props.getProperty("lucene.commitCount");
-			if (luceneCommitCountString == null) {
-				abend("Value of 'lucene.commitCount' may not be null when the lucene.directory is set");
-			}
-			try {
-				luceneCommitCount = Integer.parseInt(luceneCommitCountString);
-				formattedProps.add("lucene.commitCount " + luceneCommitCount);
-				if (luceneCommitCount <= 0) {
-					abend("Value of 'lucene.commitCount'" + luceneCommitCountString
-							+ "' is not an integer greater than 0");
-				}
-			} catch (NumberFormatException e) {
-				abend("Value of 'lucene.commitCount'" + luceneCommitCountString
-						+ "' is not an integer greater than 0");
-			}
+		} catch (CheckedPropertyException e) {
+			abend(e.getMessage());
 		}
 
-		/* maxEntities, importCacheSize, exportCacheSize, maxIdsInQuery */
-		maxEntities = getPositiveInt(props, "maxEntities");
-		importCacheSize = getPositiveLong(props, "importCacheSize");
-		exportCacheSize = getPositiveLong(props, "exportCacheSize");
-		maxIdsInQuery =  getPositiveInt(props, "maxIdsInQuery");
 	}
 
-	private long getPositiveLong(Properties props, String name) {
-		String s = props.getProperty(name);
-		long result = 0;
-		if (s != null) {
-			try {
-				result = Long.parseLong(s);
-			} catch (NumberFormatException e) {
-				abend("Value of '" + name + "'" + s + "' is not a long greater than 0");
-			}
-			if (result <= 0) {
-				abend("Value of '" + name + "'" + s + "' is not a long greater than 0");
-			}
-		} else {
-			abend("Property '" + name + "' must be set");
-		}
-		formattedProps.add(name + " " + maxEntities);
-		return result;
-	}
-	
-	private int getPositiveInt(Properties props, String name) {
-		String s = props.getProperty(name);
-		int result = 0;
-		if (s != null) {
-			try {
-				result = Integer.parseInt(s);
-			} catch (NumberFormatException e) {
-				abend("Value of '" + name + "'" + s + "' is not an integer greater than 0");
-			}
-			if (result <= 0) {
-				abend("Value of '" + name + "'" + s + "' is not an integer greater than 0");
-			}
-		} else {
-			abend("Property '" + name + "' must be set");
-		}
-		formattedProps.add(name + " " + maxEntities);
-		return result;
+	public Map<String, String> getCluster() {
+		return cluster;
 	}
 
 	private void abend(String msg) {
-		logger.fatal(msg);
+		logger.error(fatal, msg);
 		throw new IllegalStateException(msg);
 	}
 
@@ -379,32 +568,12 @@ public class PropertyHandler {
 		return notificationRequests;
 	}
 
-	public Set<String> getLogRequests() {
-		return logRequests;
-	}
-
-	public String getLuceneDirectory() {
-		return luceneDirectory;
-	}
-
-	public int getLuceneRefreshSeconds() {
-		return luceneCommitSeconds;
+	public Set<CallType> getLogSet() {
+		return logSet;
 	}
 
 	public List<String> props() {
 		return formattedProps;
-	}
-
-	public int getLuceneCommitCount() {
-		return luceneCommitCount;
-	}
-
-	public String getLuceneHost() {
-		return luceneHost;
-	}
-
-	public Integer getLucenePort() {
-		return lucenePort;
 	}
 
 	public int getMaxEntities() {
@@ -421,6 +590,38 @@ public class PropertyHandler {
 
 	public long getExportCacheSize() {
 		return exportCacheSize;
+	}
+
+	public ContainerType getContainerType() {
+		return containerType;
+	}
+
+	public String getJmsTopicConnectionFactory() {
+		return jmsTopicConnectionFactory;
+	}
+
+	public String getKey() {
+		return digestKey;
+	}
+
+	public URL getLuceneUrl() {
+		return luceneUrl;
+	}
+
+	public int getLucenePopulateBlockSize() {
+		return lucenePopulateBlockSize;
+	}
+
+	public long getLuceneBacklogHandlerIntervalMillis() {
+		return luceneBacklogHandlerIntervalMillis;
+	}
+
+	public long getLuceneEnqueuedRequestIntervalMillis() {
+		return luceneEnqueuedRequestIntervalMillis;
+	}
+
+	public Path getLuceneDirectory() {
+		return luceneDirectory;
 	}
 
 }

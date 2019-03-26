@@ -4,10 +4,10 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 
+import javax.json.stream.JsonGenerator;
 import javax.persistence.CascadeType;
 import javax.persistence.Column;
 import javax.persistence.Entity;
-import javax.persistence.EntityManager;
 import javax.persistence.FetchType;
 import javax.persistence.JoinColumn;
 import javax.persistence.ManyToOne;
@@ -15,17 +15,16 @@ import javax.persistence.OneToMany;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 
-import org.apache.lucene.document.Document;
-import org.apache.lucene.document.Field.Store;
-import org.apache.lucene.document.StringField;
-import org.apache.lucene.document.TextField;
-import org.icatproject.core.IcatException;
+import org.icatproject.core.manager.LuceneApi;
 
 @Comment("A sample to be used in an investigation")
 @SuppressWarnings("serial")
 @Entity
 @Table(uniqueConstraints = { @UniqueConstraint(columnNames = { "INVESTIGATION_ID", "NAME" }) })
 public class Sample extends EntityBaseBean implements Serializable {
+
+	@Comment("A persistent identifier attributed to this sample")
+	private String pid;
 
 	@OneToMany(cascade = CascadeType.ALL, mappedBy = "sample")
 	private List<Dataset> datasets = new ArrayList<>();
@@ -48,6 +47,14 @@ public class Sample extends EntityBaseBean implements Serializable {
 	public Sample() {
 	}
 
+	public String getPid() {
+		return pid;
+	}
+
+	public void setPid(String pid) {
+		this.pid = pid;
+	}
+
 	public List<Dataset> getDatasets() {
 		return this.datasets;
 	}
@@ -62,18 +69,6 @@ public class Sample extends EntityBaseBean implements Serializable {
 
 	public List<SampleParameter> getParameters() {
 		return parameters;
-	}
-
-	@Override
-	public void isValid(EntityManager manager, boolean deepValidation) throws IcatException {
-		super.isValid(manager, deepValidation);
-		if (deepValidation) {
-			if (this.parameters != null) {
-				for (final SampleParameter sampleParameter : this.parameters) {
-					sampleParameter.isValid(manager);
-				}
-			}
-		}
 	}
 
 	public void setDatasets(List<Dataset> datasets) {
@@ -101,14 +96,12 @@ public class Sample extends EntityBaseBean implements Serializable {
 	}
 
 	@Override
-	public Document getDoc() {
-		Document doc = new Document();
+	public void getDoc(JsonGenerator gen) {
 		StringBuilder sb = new StringBuilder(name);
 		if (type != null) {
 			sb.append(" " + type.getName());
 		}
-		doc.add(new TextField("text", sb.toString(), Store.NO));
-		doc.add(new StringField("investigation", "Investigation:" + investigation.id, Store.YES));
-		return doc;
+		LuceneApi.encodeTextfield(gen, "text", sb.toString());
+		LuceneApi.encodeSortedDocValuesField(gen, "investigation", investigation.id);
 	}
 }

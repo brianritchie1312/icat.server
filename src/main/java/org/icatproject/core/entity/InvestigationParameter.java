@@ -2,6 +2,7 @@ package org.icatproject.core.entity;
 
 import java.io.Serializable;
 
+import javax.json.stream.JsonGenerator;
 import javax.persistence.Entity;
 import javax.persistence.EntityManager;
 import javax.persistence.JoinColumn;
@@ -10,17 +11,15 @@ import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 import javax.xml.bind.annotation.XmlRootElement;
 
-import org.apache.lucene.document.Document;
-import org.apache.lucene.document.Field.Store;
-import org.apache.lucene.document.StringField;
 import org.icatproject.core.IcatException;
+import org.icatproject.core.manager.EntityBeanManager.PersistMode;
 import org.icatproject.core.manager.GateKeeper;
+import org.icatproject.core.manager.LuceneApi;
 
 @Comment("A parameter associated with an investigation")
 @SuppressWarnings("serial")
 @Entity
-@Table(uniqueConstraints = { @UniqueConstraint(columnNames = { "INVESTIGATION_ID",
-		"PARAMETER_TYPE_ID" }) })
+@Table(uniqueConstraints = { @UniqueConstraint(columnNames = { "INVESTIGATION_ID", "PARAMETER_TYPE_ID" }) })
 @XmlRootElement
 public class InvestigationParameter extends Parameter implements Serializable {
 
@@ -38,18 +37,16 @@ public class InvestigationParameter extends Parameter implements Serializable {
 	}
 
 	@Override
-	public void preparePersist(String modId, EntityManager manager, GateKeeper gateKeeper,
-			boolean rootUser) throws IcatException {
-		super.preparePersist(modId, manager, gateKeeper, rootUser);
+	public void preparePersist(String modId, EntityManager manager, GateKeeper gateKeeper, PersistMode persistMode)
+			throws IcatException {
+		super.preparePersist(modId, manager, gateKeeper, persistMode);
 		this.id = null;
 		if (type == null) {
-			throw new IcatException(IcatException.IcatExceptionType.VALIDATION,
-					"Type of parameter is not set");
+			throw new IcatException(IcatException.IcatExceptionType.VALIDATION, "Type of parameter is not set");
 		}
 		if (!type.isApplicableToInvestigation()) {
 			throw new IcatException(IcatException.IcatExceptionType.VALIDATION,
-					"Parameter of type " + type.getName()
-							+ " is not applicable to an Investigation");
+					"Parameter of type " + type.getName() + " is not applicable to an Investigation");
 		}
 	}
 
@@ -58,9 +55,8 @@ public class InvestigationParameter extends Parameter implements Serializable {
 	}
 
 	@Override
-	public Document getDoc() {
-		Document doc = super.getDoc();
-		doc.add(new StringField("investigation", "Investigation:" + investigation.id, Store.YES));
-		return doc;
+	public void getDoc(JsonGenerator gen) {
+		super.getDoc(gen);
+		LuceneApi.encodeSortedDocValuesField(gen, "investigation", investigation.id);
 	}
 }

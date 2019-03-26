@@ -1,6 +1,6 @@
-<project xmlns="http://maven.apache.org/DECORATION/1.0.0"
+<project xmlns="http://maven.apache.org/DECORATION/1.6.0"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    xsi:schemaLocation="http://maven.apache.org/DECORATION/1.0.0 http://maven.apache.org/xsd/decoration-1.0.0.xsd">
+    xsi:schemaLocation="http://maven.apache.org/DECORATION/1.6.0 http://maven.apache.org/xsd/decoration-1.6.0.xsd">
   <body>
   
     <breadcrumbs>
@@ -8,11 +8,13 @@
     </breadcrumbs>
 
     <menu name="Information for Users">
+      <item name="User manual" href="user.html"/>
       <item name="Schema" href="schema.html"/>
       <item name="FAQ" href="faq.html"/>
       <item name="Issue Tracking" href="issue-tracking.html"/>
       <item name="Release Notes" href="release-notes.html"/>
-      <item name="RESTful interface" href="manual_rest.html"/>
+      <item name="SOAP interface" href="soap.html"/>
+      <item name="RESTful interface (in new window)" href="miredot/index.html" target="_blank"/>
     </menu>
        
     <menu name="Information for Installers">
