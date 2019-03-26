@@ -31,6 +31,10 @@ public class Study extends EntityBaseBean implements Serializable {
 	@Temporal(TemporalType.TIMESTAMP)
 	private Date startDate;
 
+	@Comment("The end date of this study")
+	@Temporal(TemporalType.TIMESTAMP)
+	private Date endDate;
+
 	@Comment("The user responsible for the study")
 	@ManyToOne(fetch = FetchType.LAZY)
 	private User user;
@@ -45,6 +49,9 @@ public class Study extends EntityBaseBean implements Serializable {
 
 	@Comment("The status of the study. Possible values are: NEW, IN_PROGRESS, COMPLETE, CANCELLED")
 	private StudyStatus status;
+
+	@Comment("A persistent identifier attributed to this study")
+	private String pid;
 
 	@OneToMany(cascade = CascadeType.ALL, mappedBy = "study")
 	private List<StudyInvestigation> studyInvestigations = new ArrayList<>();;
@@ -73,6 +80,14 @@ public class Study extends EntityBaseBean implements Serializable {
 		this.startDate = startDate;
 	}
 
+	public Date getEndDate() {
+		return endDate;
+	}
+
+	public void setEndDate(Date endDate) {
+		this.endDate = endDate;
+	}
+
 	public void setName(String name) {
 		this.name = name;
 	}
@@ -91,6 +106,14 @@ public class Study extends EntityBaseBean implements Serializable {
 
 	public void setStudyInvestigations(List<StudyInvestigation> studyInvestigations) {
 		this.studyInvestigations = studyInvestigations;
+	}
+
+	public String getPid() {
+		return pid;
+	}
+
+	public void setPid(String pid) {
+		this.pid = pid;
 	}
 
 }

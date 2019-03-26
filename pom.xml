@@ -3,7 +3,7 @@
 
 	<groupId>org.icatproject</groupId>
 	<artifactId>icat.server</artifactId>
-	<version>4.9.1-SNAPSHOT</version>
+	<version>4.10.1-SNAPSHOT</version>
 	<packaging>war</packaging>
 	<name>ICAT Server</name>
 	<description>A metadata catalogue to support Large Facility experimental data, 
@@ -105,7 +105,7 @@
 		<dependency>
 			<groupId>commons-fileupload</groupId>
 			<artifactId>commons-fileupload</artifactId>
-			<version>1.3</version>
+			<version>1.3.3</version>
 		</dependency>
 
 		<dependency>
@@ -124,7 +124,7 @@
 		<dependency>
 			<groupId>org.apache.httpcomponents</groupId>
 			<artifactId>httpclient</artifactId>
-			<version>4.3.4</version>
+			<version>4.3.6</version>
 		</dependency>
 
 		<dependency>
@@ -316,13 +316,12 @@
 
 						<configuration>
 							<skip>${maven.install.skip}</skip>
-							<executable>asadmin</executable>
+							<executable>python</executable>
 							<arguments>
-								<argument>--echo</argument>
-								<argument>--port=4848</argument>
-								<argument>deploy</argument>
-								<argument>--force=true</argument>
-								<argument>${project.build.directory}/${project.build.finalName}.war</argument>
+								<argument>src/test/scripts/prepare_test.py</argument>
+								<argument>${containerHome}</argument>
+								<argument>${serverUrl}</argument>
+								<argument>${luceneUrl}</argument>
 							</arguments>
 						</configuration>
 						<goals>

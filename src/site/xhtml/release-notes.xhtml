@@ -6,6 +6,36 @@
 
 	<h1>ICAT Server Release Notes</h1>
 
+	<h2>4.10.0</h2>
+	<p>Make some additions to the schema</p>
+	<ul>
+		<li>Add an attribute pid to Instrument, ParameterType, and Sample
+			(Issue 198).</li>
+		<li>Add an optional relation between Shift and Instrument (Issue 199).</li>
+		<li>Add attributes familyName, givenName, and affiliation to User
+			(Issue 201).</li>
+		<li>Add an attribute pid to Study (Issue 216).</li>
+		<li>Add an attribute endDate to Study (Issue 219).</li>
+		<li>Fixes bugs in converting some types to JSON (Issue 220 and 196).</li>
+	</ul>
+
+	<h2>4.9.3</h2>
+	<p>Bug fixes</p>
+	<ul>
+		<li>Make the message transmitters more fault-tolerant.</li>
+		<li>Upgrade commons-fileupload from 1.3 to 1.3.3 because of security vulnerabilities (<a href="https://nvd.nist.gov/vuln/detail/CVE-2016-3092">CVE-2016-3092</a>, <a href="https://nvd.nist.gov/vuln/detail/CVE-2016-1000031">CVE-2016-1000031</a>, <a href="https://nvd.nist.gov/vuln/detail/CVE-2014-0050">CVE-2014-0050</a>).</li>
+	</ul>
+
+	<h2>4.9.2</h2>
+	<p>Bug fixes</p>
+	<ul>
+		<li>Create a new option to configure which entities are included in the Lucene index.
+		For example, remove 'Datafile' and 'DatafileParameter' if the number of datafiles exceeds lucene's limit of 2^32 entries in an index
+		lucene.entitiesToIndex = Datafile Dataset Investigation InvestigationUser DatafileParameter DatasetParameter InvestigationParameter Sample</li>
+		<li>Upgrade the Apache HttpClient from 4.3.4 to 4.3.6 because of a security vulnerability (<a href="https://nvd.nist.gov/vuln/detail/CVE-2015-5262">CVE-2015-5262</a>).</li>
+		<li>Changes to tests and the default developer configuration to remove references to Steve Fisher's computer.</li>
+	</ul>
+
 	<h2>4.9.1</h2>
 	<p>Bug fixes</p>
 	<ul>
